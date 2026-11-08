@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "StudyLens",
+    "slug": "studylens-rn",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
+    "android": {
+      "package": "com.david.studylens",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow StudyLens to take pictures of your study pages.",
+          "photosPermission": "Allow StudyLens to select study pages from your gallery."
+        }
+      ],
+      "expo-asset"
+    ]
+  }
+}
