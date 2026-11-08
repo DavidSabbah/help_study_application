@@ -16,3 +16,4 @@ npx expo start
 
 - **Android**: `npm run android`
 - **Typecheck**: `npm run typecheck`
+
