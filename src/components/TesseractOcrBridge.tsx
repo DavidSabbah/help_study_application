@@ -4,6 +4,7 @@ import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { OcrLanguageCode, RoiBox } from '../types';
 
 export interface PreprocessStats {
+  rot90?: number;
   skewAngle: number;
   curveShiftPx: number;
   width: number;
@@ -137,11 +138,102 @@ const TESSERACT_WEBVIEW_HTML = `
     return sat[D] - sat[B] - sat[C] + sat[A];
   }
 
+  // Detect if text lines run vertically (90 deg sideways camera orientation)
+  // Uses short integral-image ribbons in the central 50% of the image
+  function detect90DegRotation(norm, W, H) {
+    if (W < 120 || H < 120) return 0;
+    var stride = W + 1;
+    var sat = buildIntegralUint32(norm, W, H);
+    var halfLen = Math.max(16, Math.min(36, Math.round(Math.min(W, H) / 36)));
+    var halfThick = 1;
+    var step = Math.max(4, Math.round(halfLen / 4));
+    var boxArea = (2 * halfLen + 1) * (2 * halfThick + 1);
+
+    var x0 = Math.max(halfLen + step + 2, Math.floor(W * 0.25));
+    var x1 = Math.min(W - halfLen - step - 3, Math.floor(W * 0.75));
+    var y0 = Math.max(halfLen + step + 2, Math.floor(H * 0.25));
+    var y1 = Math.min(H - halfLen - step - 3, Math.floor(H * 0.75));
+
+    var horizScore = 0;
+    var vertScore = 0;
+
+    for (var y = y0; y < y1; y += step) {
+      for (var x = x0; x < x1; x += step) {
+        var hAbove = boxSum(sat, stride, x - halfLen, y - step - halfThick, x + halfLen, y - step + halfThick) / boxArea;
+        var hBelow = boxSum(sat, stride, x - halfLen, y + step - halfThick, x + halfLen, y + step + halfThick) / boxArea;
+        var dh = hBelow - hAbove;
+        horizScore += dh * dh;
+
+        var vLeft = boxSum(sat, stride, x - step - halfThick, y - halfLen, x - step + halfThick, y + halfLen) / boxArea;
+        var vRight = boxSum(sat, stride, x + step - halfThick, y - halfLen, x + step + halfThick, y + halfLen) / boxArea;
+        var dv = vRight - vLeft;
+        vertScore += dv * dv;
+      }
+    }
+
+    if (vertScore > horizScore * 1.5) {
+      return 90;
+    }
+    return 0;
+  }
+
+  function rotate90CCW(src, W, H) {
+    var newW = H;
+    var newH = W;
+    var dst = new Uint8Array(newW * newH);
+    for (var y = 0; y < H; y++) {
+      var srcRow = y * W;
+      for (var x = 0; x < W; x++) {
+        var dstY = W - 1 - x;
+        dst[dstY * newW + y] = src[srcRow + x];
+      }
+    }
+    return { data: dst, width: newW, height: newH };
+  }
+
+  function rotate180(src, W, H) {
+    var len = W * H;
+    var dst = new Uint8Array(len);
+    for (var i = 0; i < len; i++) {
+      dst[i] = src[len - 1 - i];
+    }
+    return dst;
+  }
+
+  // Check if straightened horizontal text lines are upside down using baseline vs ascender derivative asymmetry
+  function isTextUpsideDown(norm, W, H) {
+    var x0 = Math.floor(W * 0.25);
+    var x1 = Math.floor(W * 0.75);
+    var y0 = Math.floor(H * 0.20);
+    var y1 = Math.floor(H * 0.80);
+    if (x1 - x0 < 60 || y1 - y0 < 60) return false;
+
+    var prof = new Float64Array(H);
+    for (var y = y0; y < y1; y++) {
+      var row = y * W;
+      var s = 0;
+      for (var x = x0; x < x1; x++) {
+        var v = norm[row + x];
+        if (v < 195) s += 195 - v;
+      }
+      prof[y] = s;
+    }
+
+    var rise3 = 0;
+    var fall3 = 0;
+    for (var y2 = y0 + 2; y2 < y1 - 2; y2++) {
+      var d = prof[y2] - prof[y2 - 2];
+      if (d > 0) rise3 += d * d * d;
+      else fall3 += (-d) * (-d) * (-d);
+    }
+    return rise3 > fall3 * 1.08;
+  }
+
   // Detect global skew angle in degrees (-12..+12) via horizontal projection profile gradient variance
   function detectSkewAngleDeg(norm, W, H) {
     var step = Math.max(1, Math.floor(Math.max(W, H) / 420));
-    var marginX = Math.floor(W * 0.05);
-    var marginY = Math.floor(H * 0.05);
+    var marginX = Math.floor(W * 0.16);
+    var marginY = Math.floor(H * 0.10);
     var ptsX = [];
     var ptsY = [];
     var cx = W * 0.5;
@@ -150,7 +242,7 @@ const TESSERACT_WEBVIEW_HTML = `
     for (var y = marginY; y < H - marginY; y += step) {
       var row = y * W;
       for (var x = marginX; x < W - marginX; x += step) {
-        if (norm[row + x] < 200) {
+        if (norm[row + x] < 195) {
           ptsX.push(x - cx);
           ptsY.push(y - cy);
         }
@@ -189,7 +281,6 @@ const TESSERACT_WEBVIEW_HTML = `
     var bestAngle = 0;
     var bestScore = scoreAngle(0);
 
-    // Coarse search: -12 to +12 deg by 1.0 deg
     for (var deg = -12; deg <= 12; deg += 1.0) {
       if (deg === 0) continue;
       var sc = scoreAngle(deg);
@@ -199,7 +290,6 @@ const TESSERACT_WEBVIEW_HTML = `
       }
     }
 
-    // Fine search around bestAngle: +/- 1.0 deg by 0.2 deg
     var center = bestAngle;
     for (var delta = -1.0; delta <= 1.001; delta += 0.2) {
       var fineDeg = Math.round((center + delta) * 10) / 10;
@@ -228,7 +318,6 @@ const TESSERACT_WEBVIEW_HTML = `
       var dstRow = y * W;
       for (var x = 0; x < W; x++) {
         var dx = x - cx;
-        // Inverse mapping from destination (x, y) to source (sx, sy)
         var sx = dx * cosA - dy * sinA + cx;
         var sy = dx * sinA + dy * cosA + cy;
         if (sx < 0 || sx >= W - 1 || sy < 0 || sy >= H - 1) {
@@ -252,149 +341,289 @@ const TESSERACT_WEBVIEW_HTML = `
     return dst;
   }
 
-  // Straighten curved book text lines across horizontal strips (de-warping page curvature near spine)
-  function straightenBookCurvature(src, W, H) {
-    var numStrips = 16;
+  // 2D Multi-Band Locked-Template Book Curvature & Perspective Fan Straightening
+  function straightenBookCurvature2D(src, W, H) {
     if (W < 160 || H < 80) {
       return { data: src, maxShift: 0 };
     }
 
-    var marginX = Math.floor(W * 0.04);
+    var numStrips = 28;
+    var marginX = Math.floor(W * 0.06);
     var usableW = W - 2 * marginX;
-    var stripW = Math.max(8, Math.floor(usableW / numStrips));
-    var profiles = [];
-    var energies = [];
+    var stripW = Math.max(6, Math.floor(usableW / numStrips));
+    var refStrip = Math.floor(numStrips * 0.55);
+
+    var stripRowEnergy = new Float32Array(numStrips * H);
+    var rowTextEnergy = new Float32Array(H);
 
     for (var s = 0; s < numStrips; s++) {
-      var sx0 = marginX + s * stripW;
-      var sx1 = s === numStrips - 1 ? W - marginX : Math.min(W - marginX, sx0 + stripW);
-      var rawProf = new Float32Array(H);
-      var totalEnergy = 0;
+      var sx0 = Math.max(2, marginX + s * stripW);
+      var sx1 = Math.min(W - 2, s === numStrips - 1 ? W - marginX : sx0 + stripW);
+      var stripLen = Math.max(1, sx1 - sx0);
+      var sOff = s * H;
 
       for (var y = 4; y < H - 4; y++) {
         var row = y * W;
         var sum = 0;
+        var inkCount = 0;
         for (var x = sx0; x < sx1; x++) {
           var v = src[row + x];
-          if (v < 210) {
-            sum += 210 - v;
+          if (v < 195) {
+            inkCount++;
+            var gradX = Math.abs(src[row + x + 1] - src[row + x - 1]);
+            if (gradX > 18) {
+              sum += gradX;
+            }
           }
         }
-        rawProf[y] = sum;
-        totalEnergy += sum;
-      }
-
-      // Smooth profile with [1, 2, 1] filter
-      var smoothProf = new Float32Array(H);
-      for (var y2 = 1; y2 < H - 1; y2++) {
-        smoothProf[y2] = 0.25 * rawProf[y2 - 1] + 0.5 * rawProf[y2] + 0.25 * rawProf[y2 + 1];
-      }
-      profiles.push(smoothProf);
-      energies.push(totalEnergy / Math.max(1, (sx1 - sx0) * H));
-    }
-
-    var maxDelta = Math.max(3, Math.min(12, Math.round(H / 45)));
-    var stripOffsets = new Float32Array(numStrips);
-    stripOffsets[0] = 0;
-
-    for (var sIdx = 1; sIdx < numStrips; sIdx++) {
-      if (energies[sIdx - 1] < 1.2 || energies[sIdx] < 1.2) {
-        stripOffsets[sIdx] = stripOffsets[sIdx - 1];
-        continue;
-      }
-      var pPrev = profiles[sIdx - 1];
-      var pCurr = profiles[sIdx];
-      var bestShift = 0;
-      var bestCorr = -1;
-      var corrByShift = new Float64Array(2 * maxDelta + 1);
-
-      for (var d = -maxDelta; d <= maxDelta; d++) {
-        var corr = 0;
-        var yStart = Math.max(8, -d + 8);
-        var yEnd = Math.min(H - 8, H - 8 - d);
-        for (var y3 = yStart; y3 < yEnd; y3++) {
-          corr += pPrev[y3] * pCurr[y3 + d];
+        if (inkCount > stripLen * 0.82) {
+          sum = 0;
         }
-        // Slight prior favoring small shifts to avoid jumping a full line
-        var penalty = 1.0 - 0.008 * d * d;
-        var weighted = corr * penalty;
-        corrByShift[d + maxDelta] = weighted;
-        if (weighted > bestCorr) {
-          bestCorr = weighted;
-          bestShift = d;
+        stripRowEnergy[sOff + y] = sum;
+        if (s >= 5 && s <= numStrips - 6) {
+          rowTextEnergy[y] += sum;
         }
       }
+    }
 
-      // Sub-pixel parabolic refinement
-      var subShift = bestShift;
-      if (bestShift > -maxDelta && bestShift < maxDelta) {
-        var cLeft = corrByShift[bestShift - 1 + maxDelta];
-        var cMid = corrByShift[bestShift + maxDelta];
-        var cRight = corrByShift[bestShift + 1 + maxDelta];
-        var denom = 2 * (2 * cMid - cLeft - cRight);
-        if (denom > 1e-6) {
-          subShift += (cRight - cLeft) / denom;
+    var meanRowEnergy = 0;
+    for (var ry = 0; ry < H; ry++) meanRowEnergy += rowTextEnergy[ry];
+    meanRowEnergy /= H;
+    var rowThresh = meanRowEnergy * 0.25;
+
+    var yTextMin = Math.floor(H * 0.08);
+    var yTextMax = Math.floor(H * 0.92);
+    for (var ty = Math.floor(H * 0.04); ty < H * 0.45; ty++) {
+      if (rowTextEnergy[ty] > rowThresh) {
+        yTextMin = Math.max(8, ty - 16);
+        break;
+      }
+    }
+    for (var by = Math.floor(H * 0.96); by > H * 0.55; by--) {
+      if (rowTextEnergy[by] > rowThresh) {
+        yTextMax = Math.min(H - 8, by + 16);
+        break;
+      }
+    }
+
+    var textSpanH = Math.max(80, yTextMax - yTextMin);
+    var numBands = textSpanH > 450 ? 8 : 3;
+    var bandCentersY = new Float32Array(numBands);
+    var bandOffsets = [];
+    var globalMaxShift = 0;
+
+    for (var b = 0; b < numBands; b++) {
+      var by0 = Math.max(4, Math.floor(yTextMin + ((b - 0.35) / numBands) * textSpanH));
+      var by1 = Math.min(H - 4, Math.floor(yTextMin + ((b + 1.35) / numBands) * textSpanH));
+      var bandH = by1 - by0;
+      bandCentersY[b] = yTextMin + ((b + 0.5) / numBands) * textSpanH;
+
+      var profiles = [];
+      var energies = [];
+
+      for (var s2 = 0; s2 < numStrips; s2++) {
+        var sOff2 = s2 * H;
+        var sx0_2 = marginX + s2 * stripW;
+        var sx1_2 = s2 === numStrips - 1 ? W - marginX : Math.min(W - marginX, sx0_2 + stripW);
+        var rawProf = new Float32Array(bandH);
+        var totalEnergy = 0;
+
+        for (var y2 = by0; y2 < by1; y2++) {
+          var val = stripRowEnergy[sOff2 + y2];
+          rawProf[y2 - by0] = val;
+          totalEnergy += val;
+        }
+
+        var smoothProf = new Float32Array(bandH);
+        var meanP = 0;
+        for (var i = 1; i < bandH - 1; i++) {
+          smoothProf[i] = 0.25 * rawProf[i - 1] + 0.5 * rawProf[i] + 0.25 * rawProf[i + 1];
+          meanP += smoothProf[i];
+        }
+        meanP /= Math.max(1, bandH);
+
+        var normSq = 0;
+        for (var i2 = 0; i2 < bandH; i2++) {
+          var centered = smoothProf[i2] - meanP;
+          smoothProf[i2] = centered;
+          normSq += centered * centered;
+        }
+        var invNorm = normSq > 1e-3 ? 1.0 / Math.sqrt(normSq) : 0;
+        for (var i3 = 0; i3 < bandH; i3++) {
+          smoothProf[i3] *= invNorm;
+        }
+
+        profiles.push(smoothProf);
+        energies.push(totalEnergy / Math.max(1, (sx1_2 - sx0_2) * bandH));
+      }
+
+      var maxStepDelta = Math.max(4, Math.min(11, Math.round(H / 90)));
+      var maxTotalShift = Math.round(H * 0.085);
+      var offsets = new Float32Array(numStrips);
+      offsets[refStrip] = 0;
+
+      var template = new Float32Array(bandH);
+      for (var tIdx = 0; tIdx < bandH; tIdx++) {
+        template[tIdx] = profiles[refStrip][tIdx];
+      }
+
+      function alignStripToTemplate(prof, prevProf, prevOffset) {
+        var bestShift = prevOffset;
+        var bestScore = -1e9;
+        var minD = Math.max(-maxTotalShift, Math.round(prevOffset) - maxStepDelta);
+        var maxD = Math.min(maxTotalShift, Math.round(prevOffset) + maxStepDelta);
+        var scores = new Float64Array(maxD - minD + 1);
+
+        for (var d = minD; d <= maxD; d++) {
+          var corrTemplate = 0;
+          var corrPrev = 0;
+          var yStart = Math.max(4, -d + 4, Math.round(-prevOffset) + 4);
+          var yEnd = Math.min(bandH - 4, bandH - 4 - d, bandH - 4 - Math.round(prevOffset));
+          var prevInt = Math.round(prevOffset);
+          for (var y3 = yStart; y3 < yEnd; y3++) {
+            var pVal = prof[y3 + d];
+            corrTemplate += template[y3] * pVal;
+            corrPrev += prevProf[y3 + prevInt] * pVal;
+          }
+          var stepDiff = d - prevOffset;
+          var score = 0.55 * corrTemplate + 0.45 * corrPrev - 0.0025 * stepDiff * stepDiff;
+          scores[d - minD] = score;
+          if (score > bestScore) {
+            bestScore = score;
+            bestShift = d;
+          }
+        }
+
+        if (bestScore < 0.16) {
+          return prevOffset;
+        }
+
+        var subShift = bestShift;
+        var idx = bestShift - minD;
+        if (idx > 0 && idx < maxD - minD) {
+          var sL = scores[idx - 1];
+          var sM = scores[idx];
+          var sR = scores[idx + 1];
+          var denom = 2 * (2 * sM - sL - sR);
+          if (denom > 1e-6) {
+            subShift += (sR - sL) / denom;
+          }
+        }
+
+        var shiftInt = Math.round(subShift);
+        for (var y4 = 4; y4 < bandH - 4; y4++) {
+          var sy = y4 + shiftInt;
+          if (sy >= 0 && sy < bandH) {
+            template[y4] = 0.78 * template[y4] + 0.22 * prof[sy];
+          }
+        }
+
+        return subShift;
+      }
+
+      for (var sr = refStrip + 1; sr < numStrips; sr++) {
+        if (energies[sr] < 1.2) {
+          var slopeR = sr >= refStrip + 2 ? (offsets[sr - 1] - offsets[sr - 2]) * 0.5 : 0;
+          offsets[sr] = offsets[sr - 1] + slopeR;
+        } else {
+          offsets[sr] = alignStripToTemplate(profiles[sr], profiles[sr - 1], offsets[sr - 1]);
         }
       }
 
-      stripOffsets[sIdx] = stripOffsets[sIdx - 1] + subShift;
-    }
-
-    // Zero-mean center the vertical offsets
-    var meanOffset = 0;
-    for (var k = 0; k < numStrips; k++) {
-      meanOffset += stripOffsets[k];
-    }
-    meanOffset /= numStrips;
-    for (var k2 = 0; k2 < numStrips; k2++) {
-      stripOffsets[k2] -= meanOffset;
-    }
-
-    // Smooth offsets across strips
-    var smoothOffsets = new Float32Array(numStrips);
-    var maxAbsShift = 0;
-    for (var k3 = 0; k3 < numStrips; k3++) {
-      var prevO = stripOffsets[Math.max(0, k3 - 1)];
-      var currO = stripOffsets[k3];
-      var nextO = stripOffsets[Math.min(numStrips - 1, k3 + 1)];
-      var val = 0.25 * prevO + 0.5 * currO + 0.25 * nextO;
-      // Clamp extreme drift
-      val = Math.max(-H * 0.08, Math.min(H * 0.08, val));
-      smoothOffsets[k3] = val;
-      if (Math.abs(val) > maxAbsShift) {
-        maxAbsShift = Math.abs(val);
+      for (var tIdx2 = 0; tIdx2 < bandH; tIdx2++) {
+        template[tIdx2] = profiles[refStrip][tIdx2];
       }
+      for (var sl = refStrip - 1; sl >= 0; sl--) {
+        if (energies[sl] < 1.2) {
+          var slopeL = sl <= refStrip - 2 ? (offsets[sl + 1] - offsets[sl + 2]) * 0.5 : 0;
+          offsets[sl] = offsets[sl + 1] + slopeL;
+        } else {
+          offsets[sl] = alignStripToTemplate(profiles[sl], profiles[sl + 1], offsets[sl + 1]);
+        }
+      }
+
+      var smoothed = new Float32Array(numStrips);
+      for (var sm = 0; sm < numStrips; sm++) {
+        var p0 = offsets[Math.max(0, sm - 1)];
+        var p1 = offsets[sm];
+        var p2 = offsets[Math.min(numStrips - 1, sm + 1)];
+        var smVal = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
+        smoothed[sm] = smVal;
+        if (Math.abs(smVal) > globalMaxShift) {
+          globalMaxShift = Math.abs(smVal);
+        }
+      }
+      bandOffsets.push(smoothed);
     }
 
-    if (maxAbsShift < 0.6) {
+    if (globalMaxShift < 0.5) {
       return { data: src, maxShift: 0 };
     }
 
-    // Interpolate vertical shift for every pixel column x and warp vertically
-    var colShift = new Float32Array(W);
+    var sIdx0 = new Int32Array(W);
+    var sIdx1 = new Int32Array(W);
+    var sFrac = new Float32Array(W);
     for (var col = 0; col < W; col++) {
       var pos = ((col - marginX) / Math.max(1, stripW)) - 0.5;
       if (pos <= 0) {
-        colShift[col] = smoothOffsets[0];
+        sIdx0[col] = 0;
+        sIdx1[col] = 0;
+        sFrac[col] = 0;
       } else if (pos >= numStrips - 1) {
-        colShift[col] = smoothOffsets[numStrips - 1];
+        sIdx0[col] = numStrips - 1;
+        sIdx1[col] = numStrips - 1;
+        sFrac[col] = 0;
       } else {
         var idx0 = pos | 0;
-        var frac = pos - idx0;
-        colShift[col] = smoothOffsets[idx0] * (1 - frac) + smoothOffsets[idx0 + 1] * frac;
+        sIdx0[col] = idx0;
+        sIdx1[col] = idx0 + 1;
+        sFrac[col] = pos - idx0;
       }
     }
 
     var dst = new Uint8Array(W * H);
     for (var yOut = 0; yOut < H; yOut++) {
+      var b0 = 0;
+      var b1 = 0;
+      var bf = 0;
+      if (yOut <= bandCentersY[0]) {
+        b0 = 0;
+        b1 = 0;
+        bf = 0;
+      } else if (yOut >= bandCentersY[numBands - 1]) {
+        b0 = numBands - 1;
+        b1 = numBands - 1;
+        bf = 0;
+      } else {
+        for (var bIdx = 0; bIdx < numBands - 1; bIdx++) {
+          if (yOut >= bandCentersY[bIdx] && yOut <= bandCentersY[bIdx + 1]) {
+            b0 = bIdx;
+            b1 = bIdx + 1;
+            bf = (yOut - bandCentersY[bIdx]) / Math.max(1, bandCentersY[bIdx + 1] - bandCentersY[bIdx]);
+            break;
+          }
+        }
+      }
+
+      var offB0 = bandOffsets[b0];
+      var offB1 = bandOffsets[b1];
       var outRow = yOut * W;
+
       for (var xOut = 0; xOut < W; xOut++) {
-        var sy = yOut + colShift[xOut];
-        if (sy < 0 || sy >= H - 1) {
+        var i0 = sIdx0[xOut];
+        var i1 = sIdx1[xOut];
+        var sf = sFrac[xOut];
+
+        var shift0 = offB0[i0] * (1 - sf) + offB0[i1] * sf;
+        var shift1 = offB1[i0] * (1 - sf) + offB1[i1] * sf;
+        var shiftY = shift0 * (1 - bf) + shift1 * bf;
+
+        var syOut = yOut + shiftY;
+        if (syOut < 0 || syOut >= H - 1) {
           dst[outRow + xOut] = 252;
         } else {
-          var y0 = sy | 0;
-          var fy = sy - y0;
+          var y0 = syOut | 0;
+          var fy = syOut - y0;
           var v0 = src[y0 * W + xOut];
           var v1 = src[(y0 + 1) * W + xOut];
           dst[outRow + xOut] = Math.round(v0 + fy * (v1 - v0));
@@ -404,18 +633,37 @@ const TESSERACT_WEBVIEW_HTML = `
 
     return {
       data: dst,
-      maxShift: Math.round(maxAbsShift * 10) / 10
+      maxShift: Math.round(globalMaxShift * 10) / 10
     };
+  }
+
+  function sharpenGrayscale3x3(src, W, H) {
+    var dst = new Uint8Array(src);
+    for (var y = 1; y < H - 1; y++) {
+      var r = y * W;
+      for (var x = 1; x < W - 1; x++) {
+        var idx = r + x;
+        var c = src[idx];
+        var blur =
+          (src[idx - W - 1] + src[idx - W] * 2 + src[idx - W + 1] +
+           src[idx - 1] * 2 + c * 4 + src[idx + 1] * 2 +
+           src[idx + W - 1] + src[idx + W] * 2 + src[idx + W + 1]) >> 4;
+        var val = c + (((c - blur) * 3) >> 2);
+        dst[idx] = val < 0 ? 0 : val > 255 ? 255 : val;
+      }
+    }
+    return dst;
   }
 
   /**
    * Standard Document / Book Image Processing Pipeline:
    * 1. Resolution normalization (upscales small ROIs, caps very large images)
    * 2. 2-Pass Integral Image Background Estimation & Division Normalization (removes shadows & uneven lighting)
-   * 3. Global Skew Detection & Bilinear Deskewing
-   * 4. Book Page Curvature Straightening (vertical strip projection alignment)
-   * 5. Sauvola Local Adaptive Thresholding / Contrast Stretching + 3x3 Despeckle
-   * 6. 24px Pure White Border Padding for optimal Tesseract LSTM recognition
+   * 3. Auto 90-deg sideways rotation detection + 180-deg baseline-asymmetry upright check
+   * 4. Global Skew Detection & Bilinear Deskewing
+   * 5. 2D Multi-Band Locked-Template Book Curvature & Perspective Fan Straightening
+   * 6. 3x3 Unsharp Mask + Bleed-Through Suppressing Sauvola Adaptive Contrast + 3x3 Despeckle
+   * 7. Pure White Border Padding for optimal Tesseract LSTM recognition
    */
   async function preprocessBookImage(b64, options) {
     var opts = options || {};
@@ -461,7 +709,7 @@ const TESSERACT_WEBVIEW_HTML = `
 
     // 2. Two-Pass Integral-Image Shadow & Uneven Illumination Removal
     var stride = W + 1;
-    var rBg = Math.max(20, Math.min(85, Math.round(Math.min(W, H) / 12)));
+    var rBg = Math.max(18, Math.min(75, Math.round(Math.min(W, H) / 14)));
     var sat1 = buildIntegralUint32(lum, W, H);
     var bgOnly = new Uint8Array(numPixels);
 
@@ -475,21 +723,21 @@ const TESSERACT_WEBVIEW_HTML = `
         var count = (x1 - x0 + 1) * (y1 - y0 + 1);
         var localMean = boxSum(sat1, stride, x0, y0, x1, y1) / count;
         var v = lum[rowOffset + x];
-        // Exclude dark ink strokes from pulling down the local paper illumination estimate
-        bgOnly[rowOffset + x] = v < localMean - 6 ? Math.min(255, Math.round(localMean + 4)) : v;
+        bgOnly[rowOffset + x] = v < localMean - 7 ? Math.min(255, Math.round(localMean + 4)) : v;
       }
     }
 
     var sat2 = buildIntegralUint32(bgOnly, W, H);
     var norm = new Uint8Array(numPixels);
+    var rBgFine = Math.max(12, Math.round(rBg * 0.65));
 
     for (var y2 = 0; y2 < H; y2++) {
-      var by0 = Math.max(0, y2 - rBg);
-      var by1 = Math.min(H - 1, y2 + rBg);
+      var by0 = Math.max(0, y2 - rBgFine);
+      var by1 = Math.min(H - 1, y2 + rBgFine);
       var rOff = y2 * W;
       for (var x2 = 0; x2 < W; x2++) {
-        var bx0 = Math.max(0, x2 - rBg);
-        var bx1 = Math.min(W - 1, x2 + rBg);
+        var bx0 = Math.max(0, x2 - rBgFine);
+        var bx1 = Math.min(W - 1, x2 + rBgFine);
         var bCount = (bx1 - bx0 + 1) * (by1 - by0 + 1);
         var bgVal = Math.max(30, boxSum(sat2, stride, bx0, by0, bx1, by1) / bCount);
         var normVal = Math.round((lum[rOff + x2] / bgVal) * 250);
@@ -497,21 +745,39 @@ const TESSERACT_WEBVIEW_HTML = `
       }
     }
 
-    // 3. Global Skew Detection & Rotation Deskewing
+    // 3. Auto 90-degree sideways rotation check
+    var rot90 = detect90DegRotation(norm, W, H);
+    if (rot90 !== 0) {
+      var rotated90 = rotate90CCW(norm, W, H);
+      norm = rotated90.data;
+      W = rotated90.width;
+      H = rotated90.height;
+      stride = W + 1;
+      rot90 = -90;
+    }
+
+    // 4. Global Skew Detection & Rotation Deskewing
     var skewAngle = detectSkewAngleDeg(norm, W, H);
     if (Math.abs(skewAngle) >= 0.2) {
       norm = rotateGrayscale(norm, W, H, skewAngle);
     }
 
-    // 4. Curved Book Line Straightening (De-warping across vertical strips)
-    var curveRes = straightenBookCurvature(norm, W, H);
+    // 5. 2D Multi-Band Book Line Straightening (De-warping curvature & perspective fan)
+    var curveRes = straightenBookCurvature2D(norm, W, H);
     norm = curveRes.data;
 
-    // 5. Sauvola Local Adaptive Thresholding & Soft Contrast Enhancement
+    // If rotated 90 degrees, verify upright vs upside-down using baseline derivative asymmetry
+    if (rot90 !== 0 && isTextUpsideDown(norm, W, H)) {
+      norm = rotate180(norm, W, H);
+      rot90 = 90;
+    }
+
+    // 6. 3x3 Unsharp Mask + Bleed-Through Suppressing Sauvola Local Adaptive Contrast
+    norm = sharpenGrayscale3x3(norm, W, H);
     var satNorm = buildIntegralUint32(norm, W, H);
     var satNormSq = buildIntegralSquaresFloat64(norm, W, H);
-    var rLocal = Math.max(12, Math.min(30, Math.round(Math.min(W, H) / 26)));
-    var sauvolaK = 0.16;
+    var rLocal = Math.max(12, Math.min(28, Math.round(Math.min(W, H) / 28)));
+    var sauvolaK = 0.20;
     var enhanced = new Uint8Array(numPixels);
 
     for (var y3 = 0; y3 < H; y3++) {
@@ -529,31 +795,30 @@ const TESSERACT_WEBVIEW_HTML = `
         var std = Math.sqrt(variance);
 
         var pVal = norm[row3 + x3];
-        // Flat paper background guard: prevents grain/noise in empty shadow areas
-        if (std < 6.5 && pVal > 195) {
+        // Suppress reverse-page bleed-through and shadow grain in paper background
+        if (pVal >= 214 || (std < 8.5 && pVal > 190)) {
           enhanced[row3 + x3] = 255;
           continue;
         }
 
-        var threshold = mean * (1.0 + sauvolaK * (std / 128.0 - 1.0)) - 3.0;
-        if (threshold > 234) threshold = 234;
+        var threshold = mean * (1.0 + sauvolaK * (std / 128.0 - 1.0)) - 4.0;
+        if (threshold > 212) threshold = 212;
 
         if (pVal >= threshold) {
           enhanced[row3 + x3] = 255;
         } else {
-          // Smooth contrast ramp near stroke boundary to preserve anti-aliased character shapes for LSTM
           var diff = threshold - pVal;
-          var ramp = Math.max(10.0, std * 0.75);
+          var ramp = Math.max(10.0, std * 0.7);
           if (diff >= ramp) {
             enhanced[row3 + x3] = 0;
           } else {
-            enhanced[row3 + x3] = Math.round(255 * Math.pow(1.0 - diff / ramp, 1.8) * 0.45);
+            enhanced[row3 + x3] = Math.round(255 * Math.pow(1.0 - diff / ramp, 1.9) * 0.4);
           }
         }
       }
     }
 
-    // 6. 3x3 Morphological Despeckle (remove isolated 1px salt-and-pepper specks & fill 1px stroke pinholes)
+    // 7. 3x3 Morphological Despeckle (remove isolated 1px specks & fill 1px stroke pinholes)
     var cleaned = new Uint8Array(enhanced);
     for (var y4 = 1; y4 < H - 1; y4++) {
       var r4 = y4 * W;
@@ -578,15 +843,18 @@ const TESSERACT_WEBVIEW_HTML = `
       }
     }
 
-    // Write back to RGBA imageData
+    workCanvas.width = W;
+    workCanvas.height = H;
+    var finalImgData = ctx.createImageData(W, H);
+    var finalRgba = finalImgData.data;
     for (var m = 0, q = 0; m < numPixels; m++, q += 4) {
       var g = cleaned[m];
-      rgba[q] = g;
-      rgba[q + 1] = g;
-      rgba[q + 2] = g;
-      rgba[q + 3] = 255;
+      finalRgba[q] = g;
+      finalRgba[q + 1] = g;
+      finalRgba[q + 2] = g;
+      finalRgba[q + 3] = 255;
     }
-    ctx.putImageData(imgData, 0, 0);
+    ctx.putImageData(finalImgData, 0, 0);
 
     // Output onto padded canvas (white border helps Tesseract near crop edges)
     var outW = W + pad * 2;
@@ -606,6 +874,7 @@ const TESSERACT_WEBVIEW_HTML = `
       base64: rawBase64,
       dataUrl: dataUrl,
       stats: {
+        rot90: rot90,
         skewAngle: skewAngle,
         curveShiftPx: curveRes.maxShift,
         width: outW,

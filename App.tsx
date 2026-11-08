@@ -204,6 +204,29 @@ export default function App() {
     }
   };
 
+  const handleLoadRealBookPage = async (which: 1 | 2) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const bookAsset = Asset.fromModule(
+        which === 1
+          ? require('./assets/real-book-page-1.jpg')
+          : require('./assets/real-book-page-2.jpg')
+      );
+      await bookAsset.downloadAsync();
+      const uri = bookAsset.localUri || bookAsset.uri;
+      resetPhotoState({
+        uri,
+        width: bookAsset.width || (which === 1 ? 2000 : 1500),
+        height: bookAsset.height || (which === 1 ? 1500 : 2000)
+      });
+    } catch (err) {
+      Alert.alert(
+        'Could not load real book image',
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  };
+
   const handleRotatePhoto = async () => {
     if (!photo) return;
     try {
@@ -375,9 +398,13 @@ export default function App() {
           if (stats && stats.length > 0) {
             setPreprocessStats(stats);
           }
+          const rotNote =
+            stats && stats.length > 0 && stats[0].rot90
+              ? ` • Rotated ${stats[0].rot90}°`
+              : '';
           const statNote =
             stats && stats.length > 0
-              ? ` • Deskew ${stats[0].skewAngle >= 0 ? '+' : ''}${stats[0].skewAngle}° • Curve flat ${stats[0].curveShiftPx}px`
+              ? `${rotNote} • Deskew ${stats[0].skewAngle >= 0 ? '+' : ''}${stats[0].skewAngle}° • Curve flat ${stats[0].curveShiftPx}px`
               : '';
           setOcrStatus(
             `✅ Local OCR complete (${selectedLangs.join('+')})${statNote}`
@@ -403,8 +430,9 @@ export default function App() {
             setIsPhotoCleaned(true);
             setRois([]);
             setProcessedPreviews([]);
+            const rotPart = stats.rot90 ? `Auto-rotated ${stats.rot90}° • ` : '';
             setOcrStatus(
-              `✨ Book page cleaned: Shadows removed • Deskewed ${stats.skewAngle >= 0 ? '+' : ''}${stats.skewAngle}° • Line curve flattened ${stats.curveShiftPx}px`
+              `✨ Book page cleaned: ${rotPart}Shadows removed • Deskewed ${stats.skewAngle >= 0 ? '+' : ''}${stats.skewAngle}° • Line curve flattened ${stats.curveShiftPx}px`
             );
           } catch (err) {
             setOcrStatus(
@@ -482,14 +510,42 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity
-                onPress={handleLoadSamplePage}
-                style={styles.samplePageBtn}
-              >
-                <Text style={styles.samplePageBtnText}>
-                  ✨ Load Sample Philosophy Page (Emulator Test)
-                </Text>
-              </TouchableOpacity>
+              <View style={{ marginTop: 10, gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => handleLoadRealBookPage(1)}
+                  style={styles.samplePageBtn}
+                >
+                  <Text style={styles.samplePageBtnText}>
+                    📖 Test Real Book Photo #1 (Sideways + Thumb Shadow + Curve)
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => handleLoadRealBookPage(2)}
+                  style={styles.samplePageBtn}
+                >
+                  <Text style={styles.samplePageBtnText}>
+                    📖 Test Real Book Photo #2 (Curved Spine + Shadow + Bleed)
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleLoadSamplePage}
+                  style={[
+                    styles.samplePageBtn,
+                    {
+                      backgroundColor: 'rgba(148, 163, 184, 0.1)',
+                      borderColor: '#334155'
+                    }
+                  ]}
+                >
+                  <Text
+                    style={[styles.samplePageBtnText, { color: '#cbd5e1' }]}
+                  >
+                    ✨ Load Clean Sample Page
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
           ) : (
             <View>
