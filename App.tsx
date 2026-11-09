@@ -14,6 +14,7 @@ import {
   StatusBar as RNStatusBar
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -455,9 +456,6 @@ export default function App() {
   const pageLang = selectedLangs[0] || 'fra';
   const pageDirection = isRtlLanguage(pageLang) ? 'rtl' : 'ltr';
   const answerDirection = isRtlLanguage(responseLang) ? 'rtl' : 'ltr';
-  const responseOption =
-    AVAILABLE_OCR_LANGUAGES.find((lang) => lang.code === responseLang) ||
-    AVAILABLE_OCR_LANGUAGES[1];
 
   const roiSourceUri = (roi: RoiBox | undefined): string | null => {
     if (!roi) return null;
@@ -511,6 +509,22 @@ export default function App() {
     setBrowser(null);
     showPhase(dest);
     if (reopenSettings) setSettingsVisible(true);
+  };
+
+  const goHome = () => {
+    setBrowser(null);
+    setSettingsVisible(false);
+    showPhase('capture');
+  };
+
+  const handleBack = () => {
+    if (phase === 'browser') {
+      backFromBrowser();
+      return;
+    }
+    if (phase === 'prompt') {
+      showPhase('capture');
+    }
   };
 
   const handleChooseTask = (id: string) => {
@@ -603,24 +617,36 @@ export default function App() {
       {/* Top Header */}
       <View style={styles.header}>
         <View style={styles.brandRow}>
-          <Text style={styles.brandEmoji}>📖</Text>
-          <View>
-            <Text style={styles.brandTitle}>StudyLens</Text>
-            <Text style={styles.brandSubtitle}>
-              Snap • ROI • Local OCR • Ask LLM
-            </Text>
+          <View style={styles.backSlot}>
+            {phase !== 'capture' && (
+              <TouchableOpacity
+                onPress={handleBack}
+                style={styles.backBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel="Back"
+              >
+                <Ionicons name="chevron-back" size={22} color="#f8fafc" />
+              </TouchableOpacity>
+            )}
           </View>
+          <TouchableOpacity
+            onPress={goHome}
+            style={styles.brandHit}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="StudyLens home"
+          >
+            <Text style={styles.brandEmoji}>📖</Text>
+            <View>
+              <Text style={styles.brandTitle}>StudyLens</Text>
+              <Text style={styles.brandSubtitle}>
+                Snap • ROI • Local OCR • Ask LLM
+              </Text>
+            </View>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.headerRight}>
-          <TouchableOpacity
-            onPress={() => setSettingsVisible(true)}
-            style={styles.langBadge}
-          >
-            <Text style={styles.langBadgeText}>
-              Ask {responseOption.short}
-            </Text>
-          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setSettingsVisible(true)}
             style={styles.settingsBtn}
@@ -633,9 +659,6 @@ export default function App() {
       {phase === 'browser' && browser ? (
         <View style={styles.browserPane}>
           <View style={styles.browserBar}>
-            <TouchableOpacity onPress={backFromBrowser} style={styles.smallHeaderBtn}>
-              <Text style={styles.smallHeaderBtnText}>Back</Text>
-            </TouchableOpacity>
             <Text style={styles.browserTitle} numberOfLines={1}>
               {browser.title}
             </Text>
@@ -903,12 +926,6 @@ export default function App() {
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
               <Text style={styles.cardTitle}>Prompt</Text>
-              <TouchableOpacity
-                onPress={() => showPhase('capture')}
-                style={styles.smallHeaderBtn}
-              >
-                <Text style={styles.smallHeaderBtnText}>Back</Text>
-              </TouchableOpacity>
             </View>
 
             <Text style={styles.fieldLabel}>Task</Text>
@@ -1033,7 +1050,28 @@ const styles = StyleSheet.create({
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10
+    gap: 4,
+    flex: 1
+  },
+  backSlot: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  backBtn: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: '#334155'
+  },
+  brandHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 1
   },
   brandEmoji: {
     fontSize: 24
@@ -1051,19 +1089,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
-  },
-  langBadge: {
-    backgroundColor: '#1e293b',
-    borderWidth: 1,
-    borderColor: '#334155',
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 8
-  },
-  langBadgeText: {
-    color: '#e2e8f0',
-    fontSize: 12,
-    fontWeight: '600'
   },
   settingsBtn: {
     backgroundColor: 'rgba(99, 102, 241, 0.18)',
