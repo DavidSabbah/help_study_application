@@ -88,6 +88,7 @@ export default function App() {
   const [processedPreviews, setProcessedPreviews] = useState<string[]>([]);
   const [preprocessStats, setPreprocessStats] = useState<PreprocessStats[]>([]);
   const [rois, setRois] = useState<RoiBox[]>([]);
+  const [phase, setPhase] = useState<'capture' | 'prompt'>('capture');
   const [isDrawingRoi, setIsDrawingRoi] = useState<boolean>(false);
   const [ocrRunning, setOcrRunning] = useState<boolean>(false);
   const [ocrStatus, setOcrStatus] = useState<string>('');
@@ -109,6 +110,14 @@ export default function App() {
   const [zoomIndex, setZoomIndex] = useState<number>(0);
 
   const ocrBridgeRef = useRef<TesseractOcrBridgeHandle>(null);
+  const scrollRef = useRef<ScrollView>(null);
+
+  const showPhase = (next: 'capture' | 'prompt') => {
+    setPhase(next);
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+    });
+  };
 
   useEffect(() => {
     (async () => {
@@ -135,6 +144,7 @@ export default function App() {
     setProcessedPreviews([]);
     setPreprocessStats([]);
     setOcrStatus('');
+    showPhase('capture');
   };
 
   const togglePageLang = (code: OcrLanguageCode) => {
@@ -385,6 +395,7 @@ export default function App() {
           normY: 0,
           normW: 1,
           normH: 1,
+          rotation: 0,
           croppedUri: full.uri,
           base64: full.base64
         }
@@ -494,8 +505,9 @@ export default function App() {
           );
           setOcrText(
             text ||
-            '(No text detected — try drawing a tighter ROI box or selecting the page language above.)'
+            '(No text detected — go back to the photo and draw a tighter region, or type the text here.)'
           );
+          showPhase('prompt');
         }}
         onEnhanceComplete={async (base64, stats) => {
           try {
@@ -563,14 +575,15 @@ export default function App() {
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         scrollEnabled={!isDrawingRoi}
       >
-        {/* STEP 1: Capture & ROI Selection */}
+        {phase === 'capture' && (
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>1. Photo</Text>
+            <Text style={styles.cardTitle}>Photo</Text>
             <View style={styles.headerActions}>
               <TouchableOpacity
                 onPress={() => setSettingsVisible(true)}
@@ -690,6 +703,11 @@ export default function App() {
                 photo={photo}
                 rois={rois}
                 onAddRoi={(roi) => setRois((prev) => [...prev, roi])}
+                onChangeRoi={(id, patch) =>
+                  setRois((prev) =>
+                    prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+                  )
+                }
                 onRemoveRoi={(id) =>
                   setRois((prev) => prev.filter((item) => item.id !== id))
                 }
@@ -716,10 +734,15 @@ export default function App() {
 
               <TouchableOpacity
                 onPress={handleRunOcr}
-                disabled={rois.length === 0 || ocrRunning || enhancingPhoto}
+                disabled={
+                  rois.length === 0 || ocrRunning || enhancingPhoto || isDrawingRoi
+                }
                 style={[
                   styles.primaryActionBtn,
-                  (rois.length === 0 || ocrRunning || enhancingPhoto) &&
+                  (rois.length === 0 ||
+                    ocrRunning ||
+                    enhancingPhoto ||
+                    isDrawingRoi) &&
                     styles.btnDisabled
                 ]}
               >
@@ -729,6 +752,15 @@ export default function App() {
                     : `🔍 Run Local OCR (${selectedLangs.join('+')}) on ${rois.length} ROI(s)`}
                 </Text>
               </TouchableOpacity>
+
+              {ocrText.length > 0 && !ocrRunning && (
+                <TouchableOpacity
+                  onPress={() => showPhase('prompt')}
+                  style={styles.openPromptBtn}
+                >
+                  <Text style={styles.openPromptText}>Open prompt</Text>
+                </TouchableOpacity>
+              )}
 
               {ocrStatus.length > 0 && (
                 <View style={styles.ocrStatusCard}>
@@ -777,13 +809,23 @@ export default function App() {
             </View>
           )}
         </View>
+        )}
 
-        {/* STEP 2: Review Extracted OCR Text & Prompt */}
-        {(ocrText.length > 0 || rois.length > 0) && (
+        {phase === 'prompt' && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>
-              2. Study Prompt & Extracted Text
-            </Text>
+            <View style={styles.cardHeaderRow}>
+              <Text style={styles.cardTitle}>Prompt</Text>
+              <TouchableOpacity
+                onPress={() => showPhase('capture')}
+                style={styles.smallHeaderBtn}
+              >
+                <Text style={styles.smallHeaderBtnText}>Photo</Text>
+              </TouchableOpacity>
+            </View>
+
+            {ocrStatus.length > 0 && (
+              <Text style={styles.ocrStatusText}>{ocrStatus}</Text>
+            )}
 
             <Text style={styles.fieldLabel}>
               Question ({askLanguageName})
@@ -805,10 +847,11 @@ export default function App() {
               style={[
                 styles.input,
                 styles.textArea,
+                styles.textAreaTall,
                 pageDirection === 'rtl' && styles.inputRtl
               ]}
               multiline
-              placeholder="Run OCR above, or type the text here..."
+              placeholder="Edit the text from the page..."
               placeholderTextColor="#64748b"
               value={ocrText}
               onChangeText={setOcrText}
@@ -1244,6 +1287,19 @@ const styles = StyleSheet.create({
   textArea: {
     minHeight: 110,
     textAlignVertical: 'top'
+  },
+  textAreaTall: {
+    minHeight: 220
+  },
+  openPromptBtn: {
+    marginTop: 8,
+    alignItems: 'center',
+    paddingVertical: 6
+  },
+  openPromptText: {
+    color: '#a5b4fc',
+    fontSize: 13,
+    fontWeight: '700'
   }
 });
 

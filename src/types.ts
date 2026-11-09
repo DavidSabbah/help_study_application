@@ -18,11 +18,17 @@ export interface OcrLanguageOption {
 
 export interface RoiBox {
   id: string;
-  /** Normalized coordinates (0..1) relative to the displayed image */
+  /**
+   * Unrotated rectangle, normalized to the displayed image.
+   * With rotation, the origin may sit slightly outside 0..1 so the
+   * turned region can stay inside the photo.
+   */
   normX: number;
   normY: number;
   normW: number;
   normH: number;
+  /** Clockwise degrees around the region center. */
+  rotation?: number;
   /** Cropped local URI produced by expo-image-manipulator */
   croppedUri?: string;
   /** Base64 PNG/JPEG string used by local Tesseract.js OCR */
