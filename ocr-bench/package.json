@@ -1,0 +1,11 @@
+{
+  "name": "ocr-bench",
+  "private": true,
+  "scripts": {
+    "ocr": "node run.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "0.1.70",
+    "tesseract.js": "5.1.1"
+  }
+}

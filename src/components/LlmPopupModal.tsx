@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Modal,
   View,
@@ -10,13 +10,18 @@ import {
   Share
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { LlmLink } from '../types';
+import { LlmLink, ProblemTypeKey } from '../types';
+import { ProblemChoice } from '../llmPrompts';
 
 interface LlmPopupModalProps {
   visible: boolean;
   onClose: () => void;
   links: LlmLink[];
   promptText: string;
+  askLanguageLabel: string;
+  problems: ProblemChoice[];
+  selectedProblem: ProblemTypeKey;
+  onSelectProblem: (key: ProblemTypeKey) => void;
   onOpenSettings: () => void;
 }
 
@@ -25,11 +30,21 @@ export const LlmPopupModal: React.FC<LlmPopupModalProps> = ({
   onClose,
   links,
   promptText,
+  askLanguageLabel,
+  problems,
+  selectedProblem,
+  onSelectProblem,
   onOpenSettings
 }) => {
   const [copiedBanner, setCopiedBanner] = useState<string>(
-    '✅ Copied to clipboard! Tap any link below and Paste.'
+    'Copied. Open an LLM below and paste.'
   );
+
+  useEffect(() => {
+    if (!visible) return;
+    Clipboard.setStringAsync(promptText);
+    setCopiedBanner(`Copied. The question is in ${askLanguageLabel}. Paste it into the LLM.`);
+  }, [visible, promptText, askLanguageLabel]);
 
   const handleCopy = async () => {
     await Clipboard.setStringAsync(promptText);
@@ -61,7 +76,7 @@ export const LlmPopupModal: React.FC<LlmPopupModalProps> = ({
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Choose LLM to Help You Study</Text>
+            <Text style={styles.headerTitle}>Ask in {askLanguageLabel}</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
               <Text style={styles.closeBtnText}>✕</Text>
             </TouchableOpacity>
@@ -74,7 +89,34 @@ export const LlmPopupModal: React.FC<LlmPopupModalProps> = ({
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+          <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
+            <Text style={styles.sectionLabel}>What should it do?</Text>
+            <View style={{ gap: 8, marginBottom: 14 }}>
+              {problems.map((problem) => {
+                const active = problem.key === selectedProblem;
+                const showHint =
+                  problem.hint.length > 0 && problem.hint !== problem.label;
+                return (
+                  <TouchableOpacity
+                    key={problem.key}
+                    onPress={() => onSelectProblem(problem.key)}
+                    style={[styles.linkCard, active && styles.problemActive]}
+                  >
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={styles.linkTitle}>{problem.label}</Text>
+                      {showHint && (
+                        <Text style={styles.linkDesc}>{problem.hint}</Text>
+                      )}
+                    </View>
+                    <Text style={active ? styles.openArrow : styles.radioOff}>
+                      {active ? '✓' : '○'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={styles.sectionLabel}>Which LLM?</Text>
             <View style={{ gap: 8 }}>
               {links.map((item) => {
                 const isNotebook =
@@ -150,7 +192,24 @@ const styles = StyleSheet.create({
   headerTitle: {
     color: '#f8fafc',
     fontSize: 17,
-    fontWeight: '700'
+    fontWeight: '700',
+    flex: 1,
+    marginRight: 8
+  },
+  sectionLabel: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8
+  },
+  problemActive: {
+    borderColor: '#6366f1',
+    backgroundColor: 'rgba(99, 102, 241, 0.16)'
+  },
+  radioOff: {
+    color: '#64748b',
+    fontWeight: '700',
+    fontSize: 16
   },
   closeBtn: {
     backgroundColor: '#334155',

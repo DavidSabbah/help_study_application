@@ -13,6 +13,7 @@ export interface OcrLanguageOption {
   code: OcrLanguageCode;
   label: string;
   flag: string;
+  short: string;
 }
 
 export interface RoiBox {
@@ -36,11 +37,12 @@ export interface LlmLink {
   desc: string;
 }
 
-export type PromptPresetKey =
-  | 'philosophy_explain'
+export type ProblemTypeKey =
+  | 'explain_lines'
+  | 'solve_problem'
   | 'notebook_lesson'
-  | 'argument_breakdown'
-  | 'exercise_help'
+  | 'summarize'
+  | 'argument'
   | 'raw_only';
 
 export interface CapturedPhoto {

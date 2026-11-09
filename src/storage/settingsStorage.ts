@@ -3,17 +3,19 @@ import { LlmLink, OcrLanguageCode, OcrLanguageOption } from '../types';
 
 const STORAGE_KEY_LINKS = '@studylens/custom_links_v2';
 const STORAGE_KEY_LANGS = '@studylens/ocr_langs_v2';
+const STORAGE_KEY_PREPROCESS = '@studylens/preprocess_v1';
+const STORAGE_KEY_RESPONSE_LANG = '@studylens/response_lang_v1';
 
 export const AVAILABLE_OCR_LANGUAGES: OcrLanguageOption[] = [
-  { code: 'heb', label: 'Hebrew (עברית)', flag: '🇮🇱' },
-  { code: 'fra', label: 'Français', flag: '🇫🇷' },
-  { code: 'eng', label: 'English', flag: '🇬🇧' },
-  { code: 'deu', label: 'Deutsch', flag: '🇩🇪' },
-  { code: 'spa', label: 'Español', flag: '🇪🇸' },
-  { code: 'ita', label: 'Italiano', flag: '🇮🇹' },
-  { code: 'lat', label: 'Latin', flag: '🏛️' },
-  { code: 'grc', label: 'Ancient Greek', flag: '🏺' },
-  { code: 'por', label: 'Português', flag: '🇵🇹' }
+  { code: 'heb', label: 'עברית', flag: '🇮🇱', short: 'HE' },
+  { code: 'fra', label: 'Français', flag: '🇫🇷', short: 'FR' },
+  { code: 'eng', label: 'English', flag: '🇬🇧', short: 'EN' },
+  { code: 'deu', label: 'Deutsch', flag: '🇩🇪', short: 'DE' },
+  { code: 'spa', label: 'Español', flag: '🇪🇸', short: 'ES' },
+  { code: 'ita', label: 'Italiano', flag: '🇮🇹', short: 'IT' },
+  { code: 'lat', label: 'Latin', flag: '🏛️', short: 'LA' },
+  { code: 'grc', label: 'Greek', flag: '🏺', short: 'GR' },
+  { code: 'por', label: 'Português', flag: '🇵🇹', short: 'PT' }
 ];
 
 export const DEFAULT_LLM_LINKS: LlmLink[] = [
@@ -69,6 +71,34 @@ export async function loadSelectedOcrLangs(): Promise<OcrLanguageCode[]> {
 export async function saveSelectedOcrLangs(langs: OcrLanguageCode[]): Promise<void> {
   const safe: OcrLanguageCode[] = langs.length > 0 ? langs : ['fra'];
   await AsyncStorage.setItem(STORAGE_KEY_LANGS, JSON.stringify(safe));
+}
+
+export async function loadPreprocessEnabled(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_PREPROCESS);
+    if (raw === null) return true;
+    return raw === '1';
+  } catch {
+    return true;
+  }
+}
+
+export async function savePreprocessEnabled(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(STORAGE_KEY_PREPROCESS, enabled ? '1' : '0');
+}
+
+export async function loadResponseLang(): Promise<OcrLanguageCode> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_RESPONSE_LANG);
+    const known = AVAILABLE_OCR_LANGUAGES.some((lang) => lang.code === raw);
+    return known ? (raw as OcrLanguageCode) : 'fra';
+  } catch {
+    return 'fra';
+  }
+}
+
+export async function saveResponseLang(lang: OcrLanguageCode): Promise<void> {
+  await AsyncStorage.setItem(STORAGE_KEY_RESPONSE_LANG, lang);
 }
 
 

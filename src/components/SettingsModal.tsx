@@ -8,21 +8,32 @@ import {
   ScrollView,
   StyleSheet
 } from 'react-native';
-import { LlmLink } from '../types';
-import { DEFAULT_LLM_LINKS } from '../storage/settingsStorage';
+import { LlmLink, OcrLanguageCode } from '../types';
+import {
+  AVAILABLE_OCR_LANGUAGES,
+  DEFAULT_LLM_LINKS
+} from '../storage/settingsStorage';
 
 interface SettingsModalProps {
   visible: boolean;
   onClose: () => void;
   links: LlmLink[];
   onChangeLinks: (links: LlmLink[]) => void;
+  preprocessEnabled: boolean;
+  onChangePreprocess: (enabled: boolean) => void;
+  responseLang: OcrLanguageCode;
+  onChangeResponseLang: (code: OcrLanguageCode) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   visible,
   onClose,
   links,
-  onChangeLinks
+  onChangeLinks,
+  preprocessEnabled,
+  onChangePreprocess,
+  responseLang,
+  onChangeResponseLang
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState<string>('');
@@ -92,7 +103,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>⚙️ LLM & Notebook Links</Text>
+            <Text style={styles.headerTitle}>⚙️ Settings</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
               <Text style={styles.closeBtnText}>✕</Text>
             </TouchableOpacity>
@@ -100,6 +111,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.sectionBox}>
+              <Text style={styles.sectionTitle}>Answer language</Text>
+              <Text style={styles.optionHint}>
+                Language of the question sent to the LLM
+              </Text>
+              <View style={styles.langWrap}>
+                {AVAILABLE_OCR_LANGUAGES.map((lang) => {
+                  const active = lang.code === responseLang;
+                  return (
+                    <TouchableOpacity
+                      key={lang.code}
+                      onPress={() => onChangeResponseLang(lang.code)}
+                      style={[styles.langChip, active && styles.langChipOn]}
+                    >
+                      <Text
+                        style={[
+                          styles.langChipText,
+                          active && styles.langChipTextOn
+                        ]}
+                      >
+                        {lang.flag} {lang.short}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <View style={styles.optionRow}>
+                <View style={styles.optionCopy}>
+                  <Text style={styles.sectionTitle}>Pre-OCR processing</Text>
+                  <Text style={styles.optionHint}>
+                    Shadows, white paper, sharpening
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => onChangePreprocess(!preprocessEnabled)}
+                  style={[styles.toggle, preprocessEnabled && styles.toggleOn]}
+                >
+                  <Text style={styles.toggleText}>
+                    {preprocessEnabled ? 'ON' : 'OFF'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={[styles.sectionBox, styles.sectionGap]}>
               <View style={styles.rowBetween}>
                 <Text style={styles.sectionTitle}>Add / Edit Link</Text>
                 <TouchableOpacity
@@ -239,10 +295,69 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 10
   },
+  sectionGap: {
+    marginTop: 10
+  },
   sectionTitle: {
     color: '#f8fafc',
     fontSize: 14,
     fontWeight: '700'
+  },
+  optionHint: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+    marginBottom: 8
+  },
+  langWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 12
+  },
+  langChip: {
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999
+  },
+  langChipOn: {
+    backgroundColor: 'rgba(99, 102, 241, 0.28)',
+    borderColor: '#6366f1'
+  },
+  langChipText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  langChipTextOn: {
+    color: '#e0e7ff'
+  },
+  optionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  optionCopy: {
+    flex: 1
+  },
+  toggle: {
+    backgroundColor: '#334155',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    minWidth: 52,
+    alignItems: 'center'
+  },
+  toggleOn: {
+    backgroundColor: '#10b981'
+  },
+  toggleText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800'
   },
   fieldLabel: {
     color: '#94a3b8',

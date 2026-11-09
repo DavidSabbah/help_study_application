@@ -17,21 +17,26 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
+import * as MediaLibrary from 'expo-media-library';
 import { Asset } from 'expo-asset';
 
 import {
   CapturedPhoto,
   LlmLink,
   OcrLanguageCode,
-  PromptPresetKey,
+  ProblemTypeKey,
   RoiBox
 } from './src/types';
 import {
   AVAILABLE_OCR_LANGUAGES,
   DEFAULT_LLM_LINKS,
+  loadPreprocessEnabled,
+  loadResponseLang,
   loadSavedLinks,
   loadSelectedOcrLangs,
   saveLinks,
+  savePreprocessEnabled,
+  saveResponseLang,
   saveSelectedOcrLangs
 } from './src/storage/settingsStorage';
 import { RoiSelector } from './src/components/RoiSelector';
@@ -42,14 +47,35 @@ import {
 } from './src/components/TesseractOcrBridge';
 import { SettingsModal } from './src/components/SettingsModal';
 import { LlmPopupModal } from './src/components/LlmPopupModal';
+import { ZoomableImageModal, ZoomSlide } from './src/components/ZoomableImageModal';
+import {
+  ASK_LANGUAGE_NAME,
+  buildStudyPrompt,
+  isRtlLanguage,
+  problemsFor,
+  questionPlaceholder
+} from './src/llmPrompts';
 
-const PRESETS: { key: PromptPresetKey; label: string }[] = [
-  { key: 'philosophy_explain', label: '🏛️ Explain Passage & Concepts' },
-  { key: 'notebook_lesson', label: '📓 Explain Using My Lesson Notebook' },
-  { key: 'argument_breakdown', label: '⚖️ Thesis & Argument Structure' },
-  { key: 'exercise_help', label: '✍️ Help Solve Exercise' },
-  { key: 'raw_only', label: '📋 Raw OCR Text Only' }
-];
+async function ensureGalleryFile(uri: string): Promise<string> {
+  const bare = uri.split('?')[0];
+  if (bare.startsWith('file://') && /\.(jpe?g|png|webp|gif|heic)$/i.test(bare)) {
+    return uri;
+  }
+  const isPng = uri.startsWith('data:image/png');
+  const dest = `${FileSystem.cacheDirectory || ''}debug-save-${Date.now()}.${isPng ? 'png' : 'jpg'}`;
+  if (uri.startsWith('data:')) {
+    const base64 = uri.includes(',') ? uri.split(',')[1] : uri;
+    await FileSystem.writeAsStringAsync(dest, base64, {
+      encoding: FileSystem.EncodingType.Base64
+    });
+    return dest;
+  }
+  const local = await ImageManipulator.manipulateAsync(uri, [], {
+    compress: 1,
+    format: ImageManipulator.SaveFormat.JPEG
+  });
+  return local.uri;
+}
 
 export default function App() {
   const [photo, setPhoto] = useState<CapturedPhoto | null>(null);
@@ -57,6 +83,8 @@ export default function App() {
   const [isPhotoCleaned, setIsPhotoCleaned] = useState<boolean>(false);
   const [enhancingPhoto, setEnhancingPhoto] = useState<boolean>(false);
   const [preprocessEnabled, setPreprocessEnabled] = useState<boolean>(true);
+  const [responseLang, setResponseLang] = useState<OcrLanguageCode>('fra');
+  const [savingImage, setSavingImage] = useState<boolean>(false);
   const [processedPreviews, setProcessedPreviews] = useState<string[]>([]);
   const [preprocessStats, setPreprocessStats] = useState<PreprocessStats[]>([]);
   const [rois, setRois] = useState<RoiBox[]>([]);
@@ -65,8 +93,8 @@ export default function App() {
   const [ocrStatus, setOcrStatus] = useState<string>('');
   const [ocrPercent, setOcrPercent] = useState<number>(0);
   const [ocrText, setOcrText] = useState<string>('');
-  const [selectedPreset, setSelectedPreset] =
-    useState<PromptPresetKey>('philosophy_explain');
+  const [selectedProblem, setSelectedProblem] =
+    useState<ProblemTypeKey>('explain_lines');
   const [customQuestion, setCustomQuestion] = useState<string>('');
 
   // Per-page OCR language selection & Settings state
@@ -76,17 +104,25 @@ export default function App() {
   const [links, setLinks] = useState<LlmLink[]>(DEFAULT_LLM_LINKS);
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
   const [llmPopupVisible, setLlmPopupVisible] = useState<boolean>(false);
+  const [zoomSlides, setZoomSlides] = useState<ZoomSlide[] | null>(null);
+  const [zoomTitle, setZoomTitle] = useState<string>('Image');
+  const [zoomIndex, setZoomIndex] = useState<number>(0);
 
   const ocrBridgeRef = useRef<TesseractOcrBridgeHandle>(null);
 
   useEffect(() => {
     (async () => {
-      const [loadedLinks, loadedLangs] = await Promise.all([
-        loadSavedLinks(),
-        loadSelectedOcrLangs()
-      ]);
+      const [loadedLinks, loadedLangs, loadedPreprocess, loadedResponse] =
+        await Promise.all([
+          loadSavedLinks(),
+          loadSelectedOcrLangs(),
+          loadPreprocessEnabled(),
+          loadResponseLang()
+        ]);
       setLinks(loadedLinks);
       setSelectedLangs(loadedLangs);
+      setPreprocessEnabled(loadedPreprocess);
+      setResponseLang(loadedResponse);
     })();
   }, []);
 
@@ -118,6 +154,16 @@ export default function App() {
   const handleUpdateLinks = async (nextLinks: LlmLink[]) => {
     setLinks(nextLinks);
     await saveLinks(nextLinks);
+  };
+
+  const handleSetPreprocess = (enabled: boolean) => {
+    setPreprocessEnabled(enabled);
+    savePreprocessEnabled(enabled);
+  };
+
+  const handleSetResponseLang = (code: OcrLanguageCode) => {
+    setResponseLang(code);
+    saveResponseLang(code);
   };
 
   // 1. Capture from Phone Camera or Gallery
@@ -227,12 +273,12 @@ export default function App() {
     }
   };
 
-  const handleRotatePhoto = async () => {
+  const handleRotatePhoto = async (degrees: 90 | -90) => {
     if (!photo) return;
     try {
       const rotated = await ImageManipulator.manipulateAsync(
         photo.uri,
-        [{ rotate: 90 }],
+        [{ rotate: degrees }],
         { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
       );
       const next = {
@@ -254,6 +300,38 @@ export default function App() {
     }
   };
 
+  const handleSaveDebugImage = async (uri?: string) => {
+    const source = uri || photo?.uri;
+    if (!source || savingImage) return;
+    try {
+      setSavingImage(true);
+      const perm = await MediaLibrary.requestPermissionsAsync(true);
+      if (!perm.granted) {
+        Alert.alert(
+          'Gallery permission',
+          'Allow StudyLens to save images so you can inspect them in your gallery.'
+        );
+        return;
+      }
+      const fileUri = await ensureGalleryFile(source);
+      await MediaLibrary.saveToLibraryAsync(fileUri);
+      setOcrStatus('💾 Image saved to your gallery.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const needsRebuild = /native module|ExpoMediaLibrary|Cannot find/i.test(
+        message
+      );
+      Alert.alert(
+        'Save failed',
+        needsRebuild
+          ? 'Gallery save needs a new Android build. Rebuild the app, then try again.'
+          : message
+      );
+    } finally {
+      setSavingImage(false);
+    }
+  };
+
   const handleCleanBookPage = async () => {
     if (!photo || enhancingPhoto || ocrRunning) return;
     if (isPhotoCleaned && originalPhoto) {
@@ -268,7 +346,7 @@ export default function App() {
     try {
       setEnhancingPhoto(true);
       setOcrStatus(
-        '✨ Cleaning book page (removing shadows, deskewing & straightening lines)...'
+        '✨ Cleaning book page (lifting shadows, fixing contrast, straightening the page)...'
       );
       const actions: ImageManipulator.Action[] =
         photo.width > 2000 ? [{ resize: { width: 2000 } }] : [];
@@ -329,48 +407,53 @@ export default function App() {
     const shouldPreprocess = preprocessEnabled && !isPhotoCleaned;
     setOcrStatus(
       shouldPreprocess
-        ? `Cleaning shadows, deskewing & starting OCR (${selectedLangs.join('+')})...`
+        ? `Cleaning the page for OCR (${selectedLangs.join('+')})...`
         : `Starting local OCR (${selectedLangs.join('+')})...`
     );
     ocrBridgeRef.current?.recognizeRois(rois, selectedLangs, shouldPreprocess);
   };
 
-  // 3. Build Prompt & Open LLM Popup
-  const buildFinalPrompt = (): string => {
-    const cleanOcr = ocrText.trim();
-    const cleanQ = customQuestion.trim();
+  const askLanguageName = ASK_LANGUAGE_NAME[responseLang];
+  const problemChoices = problemsFor(responseLang);
+  const pageLang = selectedLangs[0] || 'fra';
+  const pageDirection = isRtlLanguage(pageLang) ? 'rtl' : 'ltr';
+  const answerDirection = isRtlLanguage(responseLang) ? 'rtl' : 'ltr';
+  const responseOption =
+    AVAILABLE_OCR_LANGUAGES.find((lang) => lang.code === responseLang) ||
+    AVAILABLE_OCR_LANGUAGES[1];
 
-    if (selectedPreset === 'raw_only') {
-      return cleanQ ? `${cleanOcr}\n\nQuestion: ${cleanQ}` : cleanOcr;
+  const roiSourceUri = (roi: RoiBox | undefined): string | null => {
+    if (!roi) return null;
+    if (roi.base64) {
+      return roi.base64.startsWith('data:')
+        ? roi.base64
+        : `data:image/jpeg;base64,${roi.base64}`;
     }
-
-    const instructions: Record<PromptPresetKey, string> = {
-      philosophy_explain:
-        `I am studying philosophy and there is a passage/excerpt I do not fully understand.\n` +
-        `Please:\n` +
-        `1. Explain the main idea of this passage in clear, simple terms.\n` +
-        `2. Define the key philosophical concepts and terms used.\n` +
-        `3. Give a concrete example or analogy to make it intuitive.`,
-      notebook_lesson:
-        `Using the lesson documents and sources in my notebook, please explain the following excerpt I just scanned from my study material.\n` +
-        `Connect it directly to the concepts, authors, and arguments covered in our lesson:`,
-      argument_breakdown:
-        `Please analyze the philosophical argument in this excerpt:\n` +
-        `1. Identify the author's main thesis / conclusion.\n` +
-        `2. List the explicit and implicit premises step by step.\n` +
-        `3. Point out any key distinctions or potential objections.`,
-      exercise_help:
-        `I am working on this study exercise / question.\n` +
-        `Please guide me step by step on how to approach and answer it, highlighting the relevant philosophical concepts and arguments:`,
-      raw_only: ''
-    };
-
-    let prompt = `${instructions[selectedPreset]}\n\n"""\n${cleanOcr}\n"""`;
-    if (cleanQ) {
-      prompt += `\n\nMy specific question: ${cleanQ}`;
-    }
-    return prompt;
+    return roi.croppedUri || null;
   };
+
+  const openZoom = (title: string, slides: ZoomSlide[], index = 0) => {
+    const usable = slides.filter((slide) => slide.uri.length > 0);
+    if (usable.length === 0) return;
+    setZoomTitle(title);
+    setZoomSlides(usable);
+    setZoomIndex(Math.max(0, Math.min(index, usable.length - 1)));
+  };
+
+  const openPreprocessLarge = (idx: number) => {
+    const cleaned = processedPreviews[idx];
+    if (!cleaned) return;
+    const slides: ZoomSlide[] = [{ label: 'Cleaned for OCR', uri: cleaned }];
+    const original = roiSourceUri(rois[idx]);
+    if (original) slides.push({ label: 'Original crop', uri: original });
+    const st = preprocessStats[idx];
+    const size = st ? ` ${st.width}×${st.height}` : '';
+    openZoom(`Preprocess #${idx + 1}${size}`, slides, 0);
+  };
+
+  // 3. Build Prompt & Open LLM Popup
+  const buildFinalPrompt = (): string =>
+    buildStudyPrompt(responseLang, selectedProblem, ocrText, customQuestion);
 
   const handleOpenLlmPopup = async () => {
     const prompt = buildFinalPrompt();
@@ -464,9 +547,17 @@ export default function App() {
         <View style={styles.headerRight}>
           <TouchableOpacity
             onPress={() => setSettingsVisible(true)}
+            style={styles.langBadge}
+          >
+            <Text style={styles.langBadgeText}>
+              Ask {responseOption.short}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setSettingsVisible(true)}
             style={styles.settingsBtn}
           >
-            <Text style={styles.settingsBtnText}>⚙️ Settings</Text>
+            <Text style={styles.settingsBtnText}>⚙️</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -479,15 +570,33 @@ export default function App() {
         {/* STEP 1: Capture & ROI Selection */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>1. Photo & ROI Selection</Text>
-            {photo && (
+            <Text style={styles.cardTitle}>1. Photo</Text>
+            <View style={styles.headerActions}>
               <TouchableOpacity
-                onPress={() => resetPhotoState(null)}
-                style={styles.smallHeaderBtn}
+                onPress={() => setSettingsVisible(true)}
+                style={[
+                  styles.smallHeaderBtn,
+                  preprocessEnabled ? styles.cleanOnBtn : styles.cleanOffBtn
+                ]}
               >
-                <Text style={styles.smallHeaderBtnText}>🔄 New Photo</Text>
+                <Text
+                  style={[
+                    styles.smallHeaderBtnText,
+                    preprocessEnabled ? styles.cleanOnText : styles.cleanOffText
+                  ]}
+                >
+                  {preprocessEnabled ? 'Clean ON' : 'Clean OFF'}
+                </Text>
               </TouchableOpacity>
-            )}
+              {photo && (
+                <TouchableOpacity
+                  onPress={() => resetPhotoState(null)}
+                  style={styles.smallHeaderBtn}
+                >
+                  <Text style={styles.smallHeaderBtnText}>New</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
 
           {!photo ? (
@@ -510,39 +619,25 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              <View style={{ marginTop: 10, gap: 8 }}>
+              <View style={styles.sampleRow}>
                 <TouchableOpacity
                   onPress={() => handleLoadRealBookPage(1)}
-                  style={styles.samplePageBtn}
+                  style={styles.sampleChip}
                 >
-                  <Text style={styles.samplePageBtnText}>
-                    📖 Test Real Book Photo #1 (Sideways + Thumb Shadow + Curve)
-                  </Text>
+                  <Text style={styles.sampleChipText}>Book 1</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity
                   onPress={() => handleLoadRealBookPage(2)}
-                  style={styles.samplePageBtn}
+                  style={styles.sampleChip}
                 >
-                  <Text style={styles.samplePageBtnText}>
-                    📖 Test Real Book Photo #2 (Curved Spine + Shadow + Bleed)
-                  </Text>
+                  <Text style={styles.sampleChipText}>Book 2</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity
                   onPress={handleLoadSamplePage}
-                  style={[
-                    styles.samplePageBtn,
-                    {
-                      backgroundColor: 'rgba(148, 163, 184, 0.1)',
-                      borderColor: '#334155'
-                    }
-                  ]}
+                  style={[styles.sampleChip, styles.sampleChipMuted]}
                 >
-                  <Text
-                    style={[styles.samplePageBtnText, { color: '#cbd5e1' }]}
-                  >
-                    ✨ Load Clean Sample Page
+                  <Text style={[styles.sampleChipText, styles.sampleChipMutedText]}>
+                    Sample
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -551,51 +646,43 @@ export default function App() {
             <View>
               <View style={styles.toolbar}>
                 <TouchableOpacity
-                  onPress={handleCleanBookPage}
-                  disabled={enhancingPhoto || ocrRunning}
-                  style={[
-                    styles.toolBtn,
-                    isPhotoCleaned
-                      ? styles.toolBtnRevert
-                      : styles.toolBtnHighlight
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.toolBtnText,
-                      !isPhotoCleaned && styles.toolBtnHighlightText
-                    ]}
-                  >
-                    {enhancingPhoto
-                      ? '⏳ Cleaning...'
-                      : isPhotoCleaned
-                        ? '↩ Original Photo'
-                        : '✨ Clean Book Page'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={handleRotatePhoto}
+                  onPress={() => handleRotatePhoto(-90)}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>↻ Rotate</Text>
+                  <Text style={styles.toolBtnText}>↺</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleRotatePhoto(90)}
+                  style={styles.toolBtn}
+                >
+                  <Text style={styles.toolBtnText}>↻</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleSaveDebugImage()}
+                  disabled={savingImage}
+                  style={[styles.toolBtn, savingImage && styles.btnDisabled]}
+                >
+                  <Text style={styles.toolBtnText}>
+                    {savingImage ? '…' : 'Save'}
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handleSelectFullPage}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>⬜ Full Page</Text>
+                  <Text style={styles.toolBtnText}>Full</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => setRois((prev) => prev.slice(0, -1))}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>↩ Undo</Text>
+                  <Text style={styles.toolBtnText}>Undo</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => setRois([])}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>🗑️ Clear</Text>
+                  <Text style={styles.toolBtnText}>Clear</Text>
                 </TouchableOpacity>
               </View>
 
@@ -607,70 +694,25 @@ export default function App() {
                   setRois((prev) => prev.filter((item) => item.id !== id))
                 }
                 onDrawingChange={setIsDrawingRoi}
+                onClean={handleCleanBookPage}
+                cleanBusy={enhancingPhoto || ocrRunning}
+                cleaned={isPhotoCleaned}
               />
 
-              {/* Pre-OCR Book Image Processing Toggle */}
-              <TouchableOpacity
-                onPress={() => setPreprocessEnabled((prev) => !prev)}
-                style={[
-                  styles.preprocessBanner,
-                  preprocessEnabled && styles.preprocessBannerActive
-                ]}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.preprocessTitle}>
-                    {preprocessEnabled
-                      ? '✨ Pre-OCR Book Processing: ON'
-                      : '⚪ Pre-OCR Book Processing: OFF'}
-                  </Text>
-                  <Text style={styles.preprocessSub}>
-                    Shadow & illumination normalization • Deskew tilt • Flatten curved book lines • Sauvola contrast
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.preprocessBadge,
-                    preprocessEnabled && styles.preprocessBadgeActive
-                  ]}
-                >
-                  <Text style={styles.preprocessBadgeText}>
-                    {preprocessEnabled ? 'ACTIVE' : 'OFF'}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-
-              {/* Per-page OCR Language Selector */}
-              <Text style={styles.fieldLabel}>
-                Page OCR Language(s) ({selectedLangs.join('+')})
-              </Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.chipsRow}
-              >
+              <View style={styles.flagRow}>
                 {AVAILABLE_OCR_LANGUAGES.map((lang) => {
                   const active = selectedLangs.includes(lang.code);
                   return (
                     <TouchableOpacity
                       key={lang.code}
                       onPress={() => togglePageLang(lang.code)}
-                      style={[
-                        styles.presetChip,
-                        active && styles.presetChipActive
-                      ]}
+                      style={[styles.flagChip, active && styles.flagChipActive]}
                     >
-                      <Text
-                        style={[
-                          styles.presetChipText,
-                          active && styles.presetChipTextActive
-                        ]}
-                      >
-                        {lang.flag} {lang.label}
-                      </Text>
+                      <Text style={styles.flagChipText}>{lang.flag}</Text>
                     </TouchableOpacity>
                   );
                 })}
-              </ScrollView>
+              </View>
 
               <TouchableOpacity
                 onPress={handleRunOcr}
@@ -697,32 +739,39 @@ export default function App() {
               {processedPreviews.length > 0 && (
                 <View style={styles.previewBox}>
                   <Text style={styles.previewBoxTitle}>
-                    🧼 Preprocessed ROI(s) Sent to OCR (Shadow-Free & Straightened)
+                    Preprocessed page sent to OCR. Tap a page to open it large and zoom.
                   </Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.previewScroll}
-                  >
-                    {processedPreviews.map((dataUrl, idx) => {
-                      const st = preprocessStats[idx];
-                      return (
-                        <View key={`prev-${idx}`} style={styles.previewItem}>
+                  {processedPreviews.map((dataUrl, idx) => {
+                    const st = preprocessStats[idx];
+                    return (
+                      <View key={`prev-${idx}`} style={styles.previewItem}>
+                        <TouchableOpacity
+                          onPress={() => openPreprocessLarge(idx)}
+                          activeOpacity={0.85}
+                        >
                           <Image
                             source={{ uri: dataUrl }}
                             style={styles.previewImg}
                             resizeMode="contain"
                           />
-                          {st && (
-                            <Text style={styles.previewMeta}>
-                              #{idx + 1} • Skew {st.skewAngle >= 0 ? '+' : ''}
-                              {st.skewAngle}° • Curve {st.curveShiftPx}px
-                            </Text>
-                          )}
+                        </TouchableOpacity>
+                        <View style={styles.previewMetaRow}>
+                          <Text style={styles.previewMeta}>
+                            {st
+                              ? `#${idx + 1} • ${st.width}×${st.height} • Skew ${st.skewAngle >= 0 ? '+' : ''}${st.skewAngle}° • Curve ${st.curveShiftPx}px`
+                              : `#${idx + 1}`}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => handleSaveDebugImage(dataUrl)}
+                            disabled={savingImage}
+                            style={styles.previewSaveBtn}
+                          >
+                            <Text style={styles.toolBtnSaveText}>💾</Text>
+                          </TouchableOpacity>
                         </View>
-                      );
-                    })}
-                  </ScrollView>
+                      </View>
+                    );
+                  })}
                 </View>
               )}
             </View>
@@ -736,50 +785,34 @@ export default function App() {
               2. Study Prompt & Extracted Text
             </Text>
 
-            <Text style={styles.fieldLabel}>Philosophy / Study Mode</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.chipsRow}
-            >
-              {PRESETS.map((p) => {
-                const active = selectedPreset === p.key;
-                return (
-                  <TouchableOpacity
-                    key={p.key}
-                    onPress={() => setSelectedPreset(p.key)}
-                    style={[styles.presetChip, active && styles.presetChipActive]}
-                  >
-                    <Text
-                      style={[
-                        styles.presetChipText,
-                        active && styles.presetChipTextActive
-                      ]}
-                    >
-                      {p.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            <Text style={styles.fieldLabel}>Optional Specific Question</Text>
+            <Text style={styles.fieldLabel}>
+              Question ({askLanguageName})
+            </Text>
             <TextInput
-              style={styles.input}
-              placeholder="e.g. What does Kant mean by categorical imperative here?"
+              style={[
+                styles.input,
+                answerDirection === 'rtl' && styles.inputRtl
+              ]}
+              placeholder={questionPlaceholder(responseLang)}
               placeholderTextColor="#64748b"
               value={customQuestion}
               onChangeText={setCustomQuestion}
+              textAlign={answerDirection === 'rtl' ? 'right' : 'left'}
             />
 
-            <Text style={styles.fieldLabel}>Extracted ROI Text (Editable)</Text>
+            <Text style={styles.fieldLabel}>Extracted text</Text>
             <TextInput
-              style={[styles.input, styles.textArea]}
+              style={[
+                styles.input,
+                styles.textArea,
+                pageDirection === 'rtl' && styles.inputRtl
+              ]}
               multiline
-              placeholder="Run Local OCR above or type/paste text here..."
+              placeholder="Run OCR above, or type the text here..."
               placeholderTextColor="#64748b"
               value={ocrText}
               onChangeText={setOcrText}
+              textAlign={pageDirection === 'rtl' ? 'right' : 'left'}
             />
 
             <TouchableOpacity
@@ -787,7 +820,7 @@ export default function App() {
               style={styles.successActionBtn}
             >
               <Text style={styles.primaryActionBtnText}>
-                🚀 Copy to Clipboard & Choose LLM / Notebook...
+                {`Ask in ${askLanguageName}...`}
               </Text>
             </TouchableOpacity>
           </View>
@@ -800,10 +833,22 @@ export default function App() {
         onClose={() => setLlmPopupVisible(false)}
         links={links}
         promptText={buildFinalPrompt()}
+        askLanguageLabel={askLanguageName}
+        problems={problemChoices}
+        selectedProblem={selectedProblem}
+        onSelectProblem={setSelectedProblem}
         onOpenSettings={() => {
           setLlmPopupVisible(false);
           setSettingsVisible(true);
         }}
+      />
+
+      <ZoomableImageModal
+        visible={zoomSlides !== null}
+        title={zoomTitle}
+        slides={zoomSlides || []}
+        initialIndex={zoomIndex}
+        onClose={() => setZoomSlides(null)}
       />
 
       {/* Settings Modal (Links) */}
@@ -812,6 +857,10 @@ export default function App() {
         onClose={() => setSettingsVisible(false)}
         links={links}
         onChangeLinks={handleUpdateLinks}
+        preprocessEnabled={preprocessEnabled}
+        onChangePreprocess={handleSetPreprocess}
+        responseLang={responseLang}
+        onChangeResponseLang={handleSetResponseLang}
       />
     </SafeAreaView>
   );
@@ -953,31 +1002,66 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14
   },
-  samplePageBtn: {
-    marginTop: 10,
-    backgroundColor: 'rgba(56, 189, 248, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.4)',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center'
-  },
-  samplePageBtnText: {
-    color: '#38bdf8',
-    fontWeight: '700',
-    fontSize: 13
-  },
-  toolbar: {
+  sampleRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    marginBottom: 10
+    marginTop: 8
+  },
+  sampleChip: {
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8
+  },
+  sampleChipMuted: {
+    backgroundColor: 'rgba(148, 163, 184, 0.1)',
+    borderColor: '#334155'
+  },
+  sampleChipText: {
+    color: '#7dd3fc',
+    fontWeight: '700',
+    fontSize: 11
+  },
+  sampleChipMutedText: {
+    color: '#cbd5e1'
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
+  },
+  cleanOnBtn: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderWidth: 1,
+    borderColor: '#10b981'
+  },
+  cleanOffBtn: {
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  cleanOnText: {
+    color: '#6ee7b7'
+  },
+  cleanOffText: {
+    color: '#94a3b8'
+  },
+  toolbar: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    gap: 4,
+    marginBottom: 8
   },
   toolBtn: {
+    flex: 1,
+    alignItems: 'center',
     backgroundColor: '#0f172a',
     borderWidth: 1,
     borderColor: '#334155',
-    paddingHorizontal: 10,
+    paddingHorizontal: 2,
     paddingVertical: 6,
     borderRadius: 8
   },
@@ -989,6 +1073,15 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(245, 158, 11, 0.16)',
     borderColor: '#f59e0b'
   },
+  toolBtnSave: {
+    borderColor: '#f59e0b',
+    backgroundColor: 'rgba(245, 158, 11, 0.12)'
+  },
+  toolBtnSaveText: {
+    color: '#fcd34d',
+    fontSize: 12,
+    fontWeight: '700'
+  },
   toolBtnText: {
     color: '#e2e8f0',
     fontSize: 12,
@@ -998,49 +1091,8 @@ const styles = StyleSheet.create({
     color: '#6ee7b7',
     fontWeight: '700'
   },
-  preprocessBanner: {
-    marginTop: 12,
-    backgroundColor: '#0f172a',
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10
-  },
-  preprocessBannerActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderColor: 'rgba(16, 185, 129, 0.45)'
-  },
-  preprocessTitle: {
-    color: '#f8fafc',
-    fontSize: 12,
-    fontWeight: '700'
-  },
-  preprocessSub: {
-    color: '#94a3b8',
-    fontSize: 11,
-    marginTop: 2
-  },
-  preprocessBadge: {
-    backgroundColor: '#1e293b',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#334155'
-  },
-  preprocessBadgeActive: {
-    backgroundColor: '#10b981',
-    borderColor: '#10b981'
-  },
-  preprocessBadgeText: {
-    color: '#ffffff',
-    fontSize: 10,
-    fontWeight: '800'
+  inputRtl: {
+    writingDirection: 'rtl'
   },
   previewBox: {
     marginTop: 10,
@@ -1052,12 +1104,9 @@ const styles = StyleSheet.create({
   },
   previewBoxTitle: {
     color: '#cbd5e1',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
     marginBottom: 8
-  },
-  previewScroll: {
-    gap: 10
   },
   previewItem: {
     alignItems: 'center',
@@ -1065,19 +1114,34 @@ const styles = StyleSheet.create({
     padding: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#334155'
+    borderColor: '#334155',
+    marginBottom: 8
   },
   previewImg: {
-    width: 200,
-    height: 110,
+    width: '100%',
+    height: 320,
     backgroundColor: '#ffffff',
     borderRadius: 4
   },
+  previewMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4
+  },
   previewMeta: {
+    flex: 1,
     color: '#94a3b8',
     fontSize: 10,
-    marginTop: 4,
     fontWeight: '600'
+  },
+  previewSaveBtn: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderWidth: 1,
+    borderColor: '#f59e0b',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6
   },
   primaryActionBtn: {
     marginTop: 14,
@@ -1123,6 +1187,29 @@ const styles = StyleSheet.create({
   chipsRow: {
     gap: 8,
     paddingVertical: 2
+  },
+  flagRow: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    gap: 3,
+    marginTop: 8
+  },
+  flagChip: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+    paddingVertical: 4
+  },
+  flagChipActive: {
+    backgroundColor: 'rgba(99, 102, 241, 0.28)',
+    borderColor: '#6366f1'
+  },
+  flagChipText: {
+    fontSize: 15
   },
   presetChip: {
     backgroundColor: '#0f172a',

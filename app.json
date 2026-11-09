@@ -22,6 +22,14 @@
           "photosPermission": "Allow StudyLens to select study pages from your gallery."
         }
       ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow StudyLens to save debug images to your gallery.",
+          "savePhotosPermission": "Allow StudyLens to save debug images to your gallery.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
       "expo-asset"
     ]
   }

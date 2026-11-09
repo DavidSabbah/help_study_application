@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Image,
@@ -17,6 +17,9 @@ interface RoiSelectorProps {
   onAddRoi: (roi: RoiBox) => void;
   onRemoveRoi: (id: string) => void;
   onDrawingChange?: (isDrawing: boolean) => void;
+  onClean?: () => void;
+  cleanBusy?: boolean;
+  cleaned?: boolean;
 }
 
 interface DraftBox {
@@ -26,17 +29,50 @@ interface DraftBox {
   h: number;
 }
 
+const MIN_SCALE = 1;
+const MAX_SCALE = 6;
+
 export const RoiSelector: React.FC<RoiSelectorProps> = ({
   photo,
   rois,
   onAddRoi,
   onRemoveRoi,
-  onDrawingChange
+  onDrawingChange,
+  onClean,
+  cleanBusy = false,
+  cleaned = false
 }) => {
   const [containerWidth, setContainerWidth] = useState<number>(320);
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0
+  });
+  const [scale, setScale] = useState<number>(1);
+  const [tx, setTx] = useState<number>(0);
+  const [ty, setTy] = useState<number>(0);
   const startPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const layoutRef = useRef<{ width: number; height: number }>({ width: 320, height: 400 });
+  const scaleRef = useRef<number>(1);
+  const txRef = useRef<number>(0);
+  const tyRef = useRef<number>(0);
+  const gestureRef = useRef<{
+    mode: 'none' | 'draw' | 'pinch';
+    startScale: number;
+    startTx: number;
+    startTy: number;
+    startDist: number;
+    startMidX: number;
+    startMidY: number;
+  }>({
+    mode: 'none',
+    startScale: 1,
+    startTx: 0,
+    startTy: 0,
+    startDist: 1,
+    startMidX: 0,
+    startMidY: 0
+  });
   const photoRef = useRef<CapturedPhoto>(photo);
   photoRef.current = photo;
   const onAddRoiRef = useRef(onAddRoi);
@@ -51,6 +87,42 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
   const clamp = (val: number, min: number, max: number) =>
     Math.max(min, Math.min(max, val));
 
+  const applyView = (nextScale: number, nextTx: number, nextTy: number) => {
+    const s = Math.max(MIN_SCALE, Math.min(MAX_SCALE, nextScale));
+    const { width, height } = layoutRef.current;
+    const maxX = ((s - 1) * width) / 2;
+    const maxY = ((s - 1) * height) / 2;
+    const x = s <= 1 ? 0 : Math.max(-maxX, Math.min(maxX, nextTx));
+    const y = s <= 1 ? 0 : Math.max(-maxY, Math.min(maxY, nextTy));
+    scaleRef.current = s;
+    txRef.current = x;
+    tyRef.current = y;
+    setScale(s);
+    setTx(x);
+    setTy(y);
+  };
+
+  const stageToImage = (stageX: number, stageY: number) => {
+    const { width, height } = layoutRef.current;
+    const cx = width / 2;
+    const cy = height / 2;
+    const s = Math.max(0.01, scaleRef.current);
+    return {
+      x: clamp(cx + (stageX - cx - txRef.current) / s, 0, width),
+      y: clamp(cy + (stageY - cy - tyRef.current) / s, 0, height)
+    };
+  };
+
+  useEffect(() => {
+    scaleRef.current = 1;
+    txRef.current = 0;
+    tyRef.current = 0;
+    setScale(1);
+    setTx(0);
+    setTy(0);
+    setDraftBox(null);
+  }, [photo.uri]);
+
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -59,38 +131,86 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: (evt) => {
         onDrawingChangeRef.current?.(true);
-        const { locationX, locationY } = evt.nativeEvent;
-        const { width, height } = layoutRef.current;
-        const sx = clamp(locationX, 0, width);
-        const sy = clamp(locationY, 0, height);
-        startPosRef.current = { x: sx, y: sy };
-        setDraftBox({ x: sx, y: sy, w: 0, h: 0 });
+        const touches = evt.nativeEvent.touches;
+        const g = gestureRef.current;
+        if (touches.length >= 2) {
+          g.mode = 'pinch';
+          g.startScale = scaleRef.current;
+          g.startTx = txRef.current;
+          g.startTy = tyRef.current;
+          const dx = touches[0].locationX - touches[1].locationX;
+          const dy = touches[0].locationY - touches[1].locationY;
+          g.startDist = Math.max(1, Math.hypot(dx, dy));
+          g.startMidX = (touches[0].locationX + touches[1].locationX) / 2;
+          g.startMidY = (touches[0].locationY + touches[1].locationY) / 2;
+          setDraftBox(null);
+          return;
+        }
+        g.mode = 'draw';
+        const point = stageToImage(evt.nativeEvent.locationX, evt.nativeEvent.locationY);
+        startPosRef.current = point;
+        setDraftBox({ x: point.x, y: point.y, w: 0, h: 0 });
       },
       onPanResponderMove: (evt) => {
-        const { locationX, locationY } = evt.nativeEvent;
-        const { width, height } = layoutRef.current;
-        const cx = clamp(locationX, 0, width);
-        const cy = clamp(locationY, 0, height);
+        const touches = evt.nativeEvent.touches;
+        const g = gestureRef.current;
+        if (touches.length >= 2) {
+          const dx = touches[0].locationX - touches[1].locationX;
+          const dy = touches[0].locationY - touches[1].locationY;
+          const dist = Math.max(1, Math.hypot(dx, dy));
+          const midX = (touches[0].locationX + touches[1].locationX) / 2;
+          const midY = (touches[0].locationY + touches[1].locationY) / 2;
+          const { width, height } = layoutRef.current;
+          const cx = width / 2;
+          const cy = height / 2;
+          if (g.mode !== 'pinch') {
+            g.mode = 'pinch';
+            g.startScale = scaleRef.current;
+            g.startTx = txRef.current;
+            g.startTy = tyRef.current;
+            g.startDist = dist;
+            g.startMidX = midX;
+            g.startMidY = midY;
+            setDraftBox(null);
+          }
+          const nextScale = g.startScale * (dist / g.startDist);
+          const contentX = (g.startMidX - cx - g.startTx) / g.startScale;
+          const contentY = (g.startMidY - cy - g.startTy) / g.startScale;
+          applyView(
+            nextScale,
+            midX - cx - contentX * nextScale,
+            midY - cy - contentY * nextScale
+          );
+          return;
+        }
+        if (g.mode === 'pinch') return;
+        const point = stageToImage(evt.nativeEvent.locationX, evt.nativeEvent.locationY);
         const sx = startPosRef.current.x;
         const sy = startPosRef.current.y;
-
         setDraftBox({
-          x: Math.min(sx, cx),
-          y: Math.min(sy, cy),
-          w: Math.abs(cx - sx),
-          h: Math.abs(cy - sy)
+          x: Math.min(sx, point.x),
+          y: Math.min(sy, point.y),
+          w: Math.abs(point.x - sx),
+          h: Math.abs(point.y - sy)
         });
       },
       onPanResponderTerminate: () => {
+        gestureRef.current.mode = 'none';
         onDrawingChangeRef.current?.(false);
         setDraftBox(null);
       },
       onPanResponderRelease: async (evt) => {
         onDrawingChangeRef.current?.(false);
-        const { locationX, locationY } = evt.nativeEvent;
+        const wasPinch = gestureRef.current.mode === 'pinch';
+        gestureRef.current.mode = 'none';
+        if (wasPinch) {
+          setDraftBox(null);
+          return;
+        }
         const { width, height } = layoutRef.current;
-        const cx = clamp(locationX, 0, width);
-        const cy = clamp(locationY, 0, height);
+        const point = stageToImage(evt.nativeEvent.locationX, evt.nativeEvent.locationY);
+        const cx = point.x;
+        const cy = point.y;
         const sx = startPosRef.current.x;
         const sy = startPosRef.current.y;
 
@@ -169,96 +289,112 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
   };
 
   const handleImageWrapperLayout = (e: LayoutChangeEvent) => {
-    layoutRef.current = {
-      width: e.nativeEvent.layout.width,
-      height: e.nativeEvent.layout.height
+    const width = e.nativeEvent.layout.width;
+    const height = e.nativeEvent.layout.height;
+    layoutRef.current = { width, height };
+    setStageSize((prev) =>
+      prev.width === width && prev.height === height ? prev : { width, height }
+    );
+  };
+
+  const viewW = stageSize.width || displayWidth;
+  const viewH = stageSize.height || displayHeight;
+  const mapPoint = (x: number, y: number) => {
+    const cx = viewW / 2;
+    const cy = viewH / 2;
+    return {
+      x: cx + tx + (x - cx) * scale,
+      y: cy + ty + (y - cy) * scale
     };
   };
 
   return (
     <View onLayout={handleOuterLayout} style={styles.wrapper}>
-      <View
-        style={[styles.imageStage, { width: displayWidth, height: displayHeight }]}
-        onLayout={handleImageWrapperLayout}
-      >
-        <Image
-          source={{ uri: photo.uri }}
-          style={{ width: displayWidth, height: displayHeight }}
-          resizeMode="contain"
-        />
-
-        {/* Touch surface for drawing ROI boxes */}
+      <View style={[styles.imageStage, { width: displayWidth, height: displayHeight }]}>
         <View
-          style={StyleSheet.absoluteFill}
-          {...panResponder.panHandlers}
-        />
-
-        {/* Render active finger drag rectangle */}
-        {draftBox && draftBox.w > 4 && draftBox.h > 4 && (
-          <View
-            pointerEvents="none"
-            style={[
-              styles.draftRect,
-              {
-                left: draftBox.x,
-                top: draftBox.y,
-                width: draftBox.w,
-                height: draftBox.h
-              }
-            ]}
+          pointerEvents="none"
+          onLayout={handleImageWrapperLayout}
+          style={[
+            styles.zoomLayer,
+            { transform: [{ translateX: tx }, { translateY: ty }, { scale }] }
+          ]}
+        >
+          <Image
+            source={{ uri: photo.uri }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="contain"
           />
-        )}
 
-        {/* Render existing ROI boxes with on-image delete button */}
-        {rois.map((r, idx) => {
-          const left = r.normX * displayWidth;
-          const top = r.normY * displayHeight;
-          const width = r.normW * displayWidth;
-          const height = r.normH * displayHeight;
-          const badgeInside = top < 24;
+          {draftBox && draftBox.w > 4 && draftBox.h > 4 && (
+            <View
+              style={[
+                styles.draftRect,
+                {
+                  left: draftBox.x,
+                  top: draftBox.y,
+                  width: draftBox.w,
+                  height: draftBox.h
+                }
+              ]}
+            />
+          )}
 
-          return (
+          {rois.map((r) => (
             <View
               key={r.id}
-              pointerEvents="box-none"
               style={[
                 styles.roiRect,
                 {
-                  left,
-                  top,
-                  width,
-                  height
+                  left: r.normX * viewW,
+                  top: r.normY * viewH,
+                  width: r.normW * viewW,
+                  height: r.normH * viewH
                 }
               ]}
-            >
+            />
+          ))}
+        </View>
+
+        <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers} />
+
+        {rois.map((r, idx) => {
+          const left = r.normX * viewW;
+          const top = r.normY * viewH;
+          const corner = mapPoint(left + r.normW * viewW, top);
+          const labelAt = mapPoint(left, top);
+          return (
+            <View key={`chrome-${r.id}`} pointerEvents="box-none" style={StyleSheet.absoluteFill}>
               <View
-                pointerEvents="box-none"
+                pointerEvents="none"
+                style={[styles.roiTag, { left: labelAt.x, top: Math.max(2, labelAt.y - 18) }]}
+              >
+                <Text style={styles.roiTagText}>#{idx + 1}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => onRemoveRoi(r.id)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={[
-                  styles.roiHeaderBar,
-                  badgeInside ? { top: 2 } : { top: -24 }
+                  styles.roiCloseBtn,
+                  { left: corner.x - 18, top: Math.max(2, corner.y - 10) }
                 ]}
               >
-                <View pointerEvents="none" style={styles.roiTag}>
-                  <Text style={styles.roiTagText}>#{idx + 1}</Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => onRemoveRoi(r.id)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={styles.roiCloseBtn}
-                >
-                  <Text style={styles.roiCloseBtnText}>✕</Text>
-                </TouchableOpacity>
-              </View>
+                <Text style={styles.roiCloseBtnText}>✕</Text>
+              </TouchableOpacity>
             </View>
           );
         })}
-      </View>
 
-      <View style={styles.hintBanner}>
-        <Text style={styles.hintText}>
-          👆 Drag your finger over the photo to draw ROI boxes around text or exercises
-        </Text>
-        <Text style={styles.countText}>{rois.length} ROI(s)</Text>
+        {onClean && (
+          <TouchableOpacity
+            onPress={onClean}
+            disabled={cleanBusy}
+            style={[styles.cleanBtn, cleaned && styles.cleanBtnRevert, cleanBusy && styles.cleanBtnBusy]}
+          >
+            <Text style={styles.cleanBtnText}>
+              {cleanBusy ? '…' : cleaned ? 'Original' : 'Clean'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -273,9 +409,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#090d16',
     borderRadius: 12,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#334155',
     position: 'relative'
+  },
+  zoomLayer: {
+    ...StyleSheet.absoluteFillObject
   },
   roiRect: {
     position: 'absolute',
@@ -283,15 +420,8 @@ const styles = StyleSheet.create({
     borderColor: '#6366f1',
     backgroundColor: 'rgba(99, 102, 241, 0.16)'
   },
-  roiHeaderBar: {
-    position: 'absolute',
-    left: -2,
-    right: -2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between'
-  },
   roiTag: {
+    position: 'absolute',
     backgroundColor: '#6366f1',
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -303,6 +433,7 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   roiCloseBtn: {
+    position: 'absolute',
     backgroundColor: '#ef4444',
     width: 22,
     height: 22,
@@ -325,28 +456,25 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     backgroundColor: 'rgba(56, 189, 248, 0.2)'
   },
-  hintBanner: {
-    marginTop: 10,
-    width: '100%',
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    borderColor: 'rgba(56, 189, 248, 0.3)',
-    borderWidth: 1,
+  cleanBtn: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    backgroundColor: 'rgba(16, 185, 129, 0.92)',
     borderRadius: 8,
-    padding: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between'
+    paddingHorizontal: 10,
+    paddingVertical: 6
   },
-  hintText: {
-    color: '#bae6fd',
+  cleanBtnRevert: {
+    backgroundColor: 'rgba(245, 158, 11, 0.94)'
+  },
+  cleanBtnBusy: {
+    opacity: 0.6
+  },
+  cleanBtnText: {
+    color: '#042f2e',
     fontSize: 12,
-    flex: 1,
-    marginRight: 8
-  },
-  countText: {
-    color: '#38bdf8',
-    fontWeight: '700',
-    fontSize: 12
+    fontWeight: '800'
   }
 });
 

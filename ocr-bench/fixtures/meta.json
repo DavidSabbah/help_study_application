@@ -1,0 +1,7 @@
+{
+  "source": "assets/real-book-page-1.jpg",
+  "lang": "fra",
+  "rotationDegreesClockwiseFromFile": 270,
+  "norm": { "x": 0.2186, "y": 0.3346, "w": 0.6293, "h": 0.6385 },
+  "note": "Upright crop of the ROI drawn on the right-hand page, from the heading V. DU MONDE PAÏEN through Notre monde « désenchanté »."
+}
