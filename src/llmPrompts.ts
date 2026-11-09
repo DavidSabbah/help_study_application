@@ -264,6 +264,99 @@ export function questionPlaceholder(lang: OcrLanguageCode): string {
   return PLACEHOLDERS[lang];
 }
 
+export type StudyTaskKey = Exclude<ProblemTypeKey, 'raw_only'>;
+
+export const STUDY_TASKS: { key: StudyTaskKey; label: string }[] = [
+  { key: 'explain_lines', label: 'Explain' },
+  { key: 'solve_problem', label: 'Solve' },
+  { key: 'notebook_lesson', label: 'Notebook' },
+  { key: 'summarize', label: 'Summarize' },
+  { key: 'argument', label: 'Argument' }
+];
+
+const TASK_SENTENCES: Record<OcrLanguageCode, Record<StudyTaskKey, string>> = {
+  eng: {
+    explain_lines: 'Explain this passage to me line by line',
+    solve_problem: 'Solve this problem step by step',
+    notebook_lesson: 'Explain this passage using the documents in my notebook',
+    summarize: 'Summarize this passage',
+    argument: 'Break down the argument in this passage'
+  },
+  fra: {
+    explain_lines: 'Explique-moi ce passage ligne après ligne',
+    solve_problem: 'Résous ce problème étape par étape',
+    notebook_lesson: 'Explique ce passage avec les documents de mon cahier',
+    summarize: 'Résume ce passage',
+    argument: "Analyse l'argument de ce passage"
+  },
+  heb: {
+    explain_lines: 'הסבר לי את הקטע שורה אחר שורה',
+    solve_problem: 'פתור את הבעיה שלב אחר שלב',
+    notebook_lesson: 'הסבר את הקטע בעזרת המסמכים במחברת',
+    summarize: 'סכם את הקטע',
+    argument: 'נתח את הטיעון בקטע'
+  },
+  deu: {
+    explain_lines: 'Erklär mir diese Stelle Zeile für Zeile',
+    solve_problem: 'Löse diese Aufgabe Schritt für Schritt',
+    notebook_lesson: 'Erklär diese Stelle mit den Dokumenten in meinem Heft',
+    summarize: 'Fasse diese Stelle zusammen',
+    argument: 'Analysiere das Argument dieser Stelle'
+  },
+  spa: {
+    explain_lines: 'Explícame este pasaje línea por línea',
+    solve_problem: 'Resuelve este problema paso a paso',
+    notebook_lesson: 'Explica este pasaje con los documentos de mi cuaderno',
+    summarize: 'Resume este pasaje',
+    argument: 'Analiza el argumento de este pasaje'
+  },
+  ita: {
+    explain_lines: 'Spiegami questo passo riga per riga',
+    solve_problem: 'Risolvi questo problema passo per passo',
+    notebook_lesson: 'Spiega questo passo con i documenti del mio quaderno',
+    summarize: 'Riassumi questo passo',
+    argument: "Analizza l'argomento di questo passo"
+  },
+  por: {
+    explain_lines: 'Explica-me esta passagem linha a linha',
+    solve_problem: 'Resolve este problema passo a passo',
+    notebook_lesson: 'Explica esta passagem com os documentos do meu caderno',
+    summarize: 'Resume esta passagem',
+    argument: 'Analisa o argumento desta passagem'
+  },
+  lat: {
+    explain_lines: 'Explica mihi hunc locum versum per versum',
+    solve_problem: 'Solve hoc problema gradatim',
+    notebook_lesson: 'Explica hunc locum ex documentis commentarii mei',
+    summarize: 'Summatim expone hunc locum',
+    argument: 'Explica argumentum huius loci'
+  },
+  grc: {
+    explain_lines: 'Ἐξήγησαί μοι τοῦτον τὸν τόπον κατὰ στίχον',
+    solve_problem: 'Λῦσον τὸ πρόβλημα κατὰ βήμα',
+    notebook_lesson: 'Ἐξήγησαι τοῦτον τὸν τόπον ἐκ τῶν τοῦ τετραδίου',
+    summarize: 'Συνόψισον τοῦτον τὸν τόπον',
+    argument: 'Ἀνάλυσε τὸ ἐπιχείρημα τούτου τοῦ τόπου'
+  }
+};
+
+export function taskSentence(lang: OcrLanguageCode, task: StudyTaskKey): string {
+  return TASK_SENTENCES[lang][task];
+}
+
+export function buildTaskPrompt(
+  taskText: string,
+  lang: OcrLanguageCode,
+  ocrText: string
+): string {
+  const task = taskText.trim();
+  const answer = `Answer in ${ASK_LANGUAGE_NAME[lang]}.`;
+  const source = ocrText.trim();
+  const head = [task, answer].filter((part) => part.length > 0).join('\n\n');
+  if (!source) return head;
+  return `${head}\n\n"""\n${source}\n"""`;
+}
+
 export function buildStudyPrompt(
   lang: OcrLanguageCode,
   problem: ProblemTypeKey,

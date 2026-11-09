@@ -8,11 +8,8 @@ import {
   ScrollView,
   StyleSheet
 } from 'react-native';
-import { LlmLink, OcrLanguageCode } from '../types';
-import {
-  AVAILABLE_OCR_LANGUAGES,
-  DEFAULT_LLM_LINKS
-} from '../storage/settingsStorage';
+import { LlmLink } from '../types';
+import { DEFAULT_LLM_LINKS } from '../storage/settingsStorage';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -21,8 +18,7 @@ interface SettingsModalProps {
   onChangeLinks: (links: LlmLink[]) => void;
   preprocessEnabled: boolean;
   onChangePreprocess: (enabled: boolean) => void;
-  responseLang: OcrLanguageCode;
-  onChangeResponseLang: (code: OcrLanguageCode) => void;
+  onOpenLink: (link: LlmLink) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -32,8 +28,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeLinks,
   preprocessEnabled,
   onChangePreprocess,
-  responseLang,
-  onChangeResponseLang
+  onOpenLink
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState<string>('');
@@ -111,32 +106,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.sectionBox}>
-              <Text style={styles.sectionTitle}>Answer language</Text>
-              <Text style={styles.optionHint}>
-                Language of the question sent to the LLM
-              </Text>
-              <View style={styles.langWrap}>
-                {AVAILABLE_OCR_LANGUAGES.map((lang) => {
-                  const active = lang.code === responseLang;
-                  return (
-                    <TouchableOpacity
-                      key={lang.code}
-                      onPress={() => onChangeResponseLang(lang.code)}
-                      style={[styles.langChip, active && styles.langChipOn]}
-                    >
-                      <Text
-                        style={[
-                          styles.langChipText,
-                          active && styles.langChipTextOn
-                        ]}
-                      >
-                        {lang.flag} {lang.short}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
               <View style={styles.optionRow}>
                 <View style={styles.optionCopy}>
                   <Text style={styles.sectionTitle}>Pre-OCR processing</Text>
@@ -222,6 +191,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </Text>
                     </View>
                     <View style={styles.linkRowActions}>
+                      <TouchableOpacity
+                        onPress={() => onOpenLink(item)}
+                        style={styles.smallBtn}
+                      >
+                        <Text style={styles.smallBtnText}>Open</Text>
+                      </TouchableOpacity>
                       <TouchableOpacity
                         onPress={() => handleEdit(item)}
                         style={styles.smallBtn}

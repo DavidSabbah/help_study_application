@@ -10,8 +10,10 @@ import {
   StyleSheet,
   Alert,
   Platform,
+  ActivityIndicator,
   StatusBar as RNStatusBar
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -24,7 +26,6 @@ import {
   CapturedPhoto,
   LlmLink,
   OcrLanguageCode,
-  ProblemTypeKey,
   RoiBox
 } from './src/types';
 import {
@@ -46,15 +47,21 @@ import {
   TesseractOcrBridgeHandle
 } from './src/components/TesseractOcrBridge';
 import { SettingsModal } from './src/components/SettingsModal';
-import { LlmPopupModal } from './src/components/LlmPopupModal';
+import { ComboBox } from './src/components/ComboBox';
 import { ZoomableImageModal, ZoomSlide } from './src/components/ZoomableImageModal';
 import {
-  ASK_LANGUAGE_NAME,
-  buildStudyPrompt,
+  STUDY_TASKS,
+  StudyTaskKey,
+  buildTaskPrompt,
   isRtlLanguage,
-  problemsFor,
-  questionPlaceholder
+  taskSentence
 } from './src/llmPrompts';
+
+function withHttp(url: string): string {
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
 
 async function ensureGalleryFile(uri: string): Promise<string> {
   const bare = uri.split('?')[0];
@@ -88,15 +95,27 @@ export default function App() {
   const [processedPreviews, setProcessedPreviews] = useState<string[]>([]);
   const [preprocessStats, setPreprocessStats] = useState<PreprocessStats[]>([]);
   const [rois, setRois] = useState<RoiBox[]>([]);
-  const [phase, setPhase] = useState<'capture' | 'prompt'>('capture');
+  const [phase, setPhase] = useState<'capture' | 'prompt' | 'browser'>('capture');
   const [isDrawingRoi, setIsDrawingRoi] = useState<boolean>(false);
   const [ocrRunning, setOcrRunning] = useState<boolean>(false);
   const [ocrStatus, setOcrStatus] = useState<string>('');
   const [ocrPercent, setOcrPercent] = useState<number>(0);
   const [ocrText, setOcrText] = useState<string>('');
-  const [selectedProblem, setSelectedProblem] =
-    useState<ProblemTypeKey>('explain_lines');
-  const [customQuestion, setCustomQuestion] = useState<string>('');
+  const [selectedTask, setSelectedTask] = useState<StudyTaskKey>('explain_lines');
+  const [taskText, setTaskText] = useState<string>(
+    taskSentence('fra', 'explain_lines')
+  );
+  const [taskCustom, setTaskCustom] = useState<boolean>(false);
+  const [selectedLinkId, setSelectedLinkId] = useState<string>(DEFAULT_LLM_LINKS[0].id);
+  const [browser, setBrowser] = useState<{
+    url: string;
+    title: string;
+    returnTo: 'prompt' | 'settings';
+    copied: boolean;
+  } | null>(null);
+  const [screenUnderBrowser, setScreenUnderBrowser] = useState<'capture' | 'prompt'>(
+    'prompt'
+  );
 
   // Per-page OCR language selection & Settings state
   const [selectedLangs, setSelectedLangs] = useState<OcrLanguageCode[]>([
@@ -104,7 +123,6 @@ export default function App() {
   ]);
   const [links, setLinks] = useState<LlmLink[]>(DEFAULT_LLM_LINKS);
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
-  const [llmPopupVisible, setLlmPopupVisible] = useState<boolean>(false);
   const [zoomSlides, setZoomSlides] = useState<ZoomSlide[] | null>(null);
   const [zoomTitle, setZoomTitle] = useState<string>('Image');
   const [zoomIndex, setZoomIndex] = useState<number>(0);
@@ -112,7 +130,7 @@ export default function App() {
   const ocrBridgeRef = useRef<TesseractOcrBridgeHandle>(null);
   const scrollRef = useRef<ScrollView>(null);
 
-  const showPhase = (next: 'capture' | 'prompt') => {
+  const showPhase = (next: 'capture' | 'prompt' | 'browser') => {
     setPhase(next);
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -132,8 +150,18 @@ export default function App() {
       setSelectedLangs(loadedLangs);
       setPreprocessEnabled(loadedPreprocess);
       setResponseLang(loadedResponse);
+      setSelectedLinkId((current) =>
+        loadedLinks.some((link) => link.id === current)
+          ? current
+          : loadedLinks[0]?.id || ''
+      );
     })();
   }, []);
+
+  useEffect(() => {
+    if (taskCustom) return;
+    setTaskText(taskSentence(responseLang, selectedTask));
+  }, [responseLang, selectedTask, taskCustom]);
 
   const resetPhotoState = (nextPhoto: CapturedPhoto | null) => {
     setPhoto(nextPhoto);
@@ -424,8 +452,6 @@ export default function App() {
     ocrBridgeRef.current?.recognizeRois(rois, selectedLangs, shouldPreprocess);
   };
 
-  const askLanguageName = ASK_LANGUAGE_NAME[responseLang];
-  const problemChoices = problemsFor(responseLang);
   const pageLang = selectedLangs[0] || 'fra';
   const pageDirection = isRtlLanguage(pageLang) ? 'rtl' : 'ltr';
   const answerDirection = isRtlLanguage(responseLang) ? 'rtl' : 'ltr';
@@ -462,14 +488,44 @@ export default function App() {
     openZoom(`Preprocess #${idx + 1}${size}`, slides, 0);
   };
 
-  // 3. Build Prompt & Open LLM Popup
-  const buildFinalPrompt = (): string =>
-    buildStudyPrompt(responseLang, selectedProblem, ocrText, customQuestion);
+  const selectedLink =
+    links.find((link) => link.id === selectedLinkId) || links[0];
 
-  const handleOpenLlmPopup = async () => {
-    const prompt = buildFinalPrompt();
+  const openBrowser = (
+    url: string,
+    title: string,
+    returnTo: 'prompt' | 'settings',
+    copied: boolean
+  ) => {
+    if (phase === 'capture' || phase === 'prompt') {
+      setScreenUnderBrowser(phase);
+    }
+    setBrowser({ url: withHttp(url), title, returnTo, copied });
+    if (returnTo === 'settings') setSettingsVisible(false);
+    showPhase('browser');
+  };
+
+  const backFromBrowser = () => {
+    const reopenSettings = browser?.returnTo === 'settings';
+    const dest = screenUnderBrowser;
+    setBrowser(null);
+    showPhase(dest);
+    if (reopenSettings) setSettingsVisible(true);
+  };
+
+  const handleChooseTask = (id: string) => {
+    const task = STUDY_TASKS.find((item) => item.key === id);
+    if (!task) return;
+    setSelectedTask(task.key);
+    setTaskCustom(false);
+    setTaskText(taskSentence(responseLang, task.key));
+  };
+
+  const handleExecute = async () => {
+    if (!selectedLink) return;
+    const prompt = buildTaskPrompt(taskText, responseLang, ocrText);
     await Clipboard.setStringAsync(prompt);
-    setLlmPopupVisible(true);
+    openBrowser(selectedLink.url, selectedLink.title, 'prompt', true);
   };
 
   return (
@@ -574,6 +630,38 @@ export default function App() {
         </View>
       </View>
 
+      {phase === 'browser' && browser ? (
+        <View style={styles.browserPane}>
+          <View style={styles.browserBar}>
+            <TouchableOpacity onPress={backFromBrowser} style={styles.smallHeaderBtn}>
+              <Text style={styles.smallHeaderBtnText}>Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.browserTitle} numberOfLines={1}>
+              {browser.title}
+            </Text>
+          </View>
+          {browser.copied && (
+            <Text style={styles.browserHint}>
+              Prompt copied. Paste it into the page.
+            </Text>
+          )}
+          <WebView
+            source={{ uri: browser.url }}
+            style={styles.webview}
+            javaScriptEnabled
+            domStorageEnabled
+            thirdPartyCookiesEnabled
+            sharedCookiesEnabled
+            cacheEnabled
+            userAgent="Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            setSupportMultipleWindows={false}
+            startInLoadingState
+            renderLoading={() => (
+              <ActivityIndicator color="#818cf8" style={styles.browserSpinner} />
+            )}
+          />
+        </View>
+      ) : (
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -819,28 +907,70 @@ export default function App() {
                 onPress={() => showPhase('capture')}
                 style={styles.smallHeaderBtn}
               >
-                <Text style={styles.smallHeaderBtnText}>Photo</Text>
+                <Text style={styles.smallHeaderBtnText}>Back</Text>
               </TouchableOpacity>
             </View>
 
-            {ocrStatus.length > 0 && (
-              <Text style={styles.ocrStatusText}>{ocrStatus}</Text>
-            )}
-
-            <Text style={styles.fieldLabel}>
-              Question ({askLanguageName})
-            </Text>
+            <Text style={styles.fieldLabel}>Task</Text>
+            <ComboBox
+              value={selectedTask}
+              options={STUDY_TASKS.map((task) => ({
+                id: task.key,
+                label: task.label
+              }))}
+              onChange={handleChooseTask}
+            />
             <TextInput
               style={[
                 styles.input,
+                styles.taskInput,
                 answerDirection === 'rtl' && styles.inputRtl
               ]}
-              placeholder={questionPlaceholder(responseLang)}
+              multiline
+              placeholder="Write the task"
               placeholderTextColor="#64748b"
-              value={customQuestion}
-              onChangeText={setCustomQuestion}
+              value={taskText}
+              onChangeText={(value) => {
+                setTaskText(value);
+                setTaskCustom(true);
+              }}
               textAlign={answerDirection === 'rtl' ? 'right' : 'left'}
             />
+
+            <Text style={styles.fieldLabel}>Answer in</Text>
+            <View style={styles.flagRow}>
+              {AVAILABLE_OCR_LANGUAGES.map((lang) => {
+                const active = lang.code === responseLang;
+                return (
+                  <TouchableOpacity
+                    key={lang.code}
+                    onPress={() => handleSetResponseLang(lang.code)}
+                    style={[styles.flagChip, active && styles.flagChipActive]}
+                  >
+                    <Text style={styles.flagChipText}>{lang.flag}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={styles.fieldLabel}>Open in</Text>
+            <ComboBox
+              value={selectedLink?.id || ''}
+              options={links.map((link) => ({
+                id: link.id,
+                label: `${link.icon} ${link.title}`
+              }))}
+              onChange={setSelectedLinkId}
+              placeholder="Choose a page"
+            />
+
+            <TouchableOpacity
+              onPress={handleExecute}
+              disabled={!selectedLink}
+              style={[styles.successActionBtn, !selectedLink && styles.btnDisabled]}
+            >
+              <Text style={styles.primaryActionBtnText}>Execute</Text>
+            </TouchableOpacity>
 
             <Text style={styles.fieldLabel}>Extracted text</Text>
             <TextInput
@@ -851,40 +981,16 @@ export default function App() {
                 pageDirection === 'rtl' && styles.inputRtl
               ]}
               multiline
-              placeholder="Edit the text from the page..."
+              placeholder="Text from the page"
               placeholderTextColor="#64748b"
               value={ocrText}
               onChangeText={setOcrText}
               textAlign={pageDirection === 'rtl' ? 'right' : 'left'}
             />
-
-            <TouchableOpacity
-              onPress={handleOpenLlmPopup}
-              style={styles.successActionBtn}
-            >
-              <Text style={styles.primaryActionBtnText}>
-                {`Ask in ${askLanguageName}...`}
-              </Text>
-            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
-
-      {/* STEP 3: Popup to Choose LLM / NotebookLM */}
-      <LlmPopupModal
-        visible={llmPopupVisible}
-        onClose={() => setLlmPopupVisible(false)}
-        links={links}
-        promptText={buildFinalPrompt()}
-        askLanguageLabel={askLanguageName}
-        problems={problemChoices}
-        selectedProblem={selectedProblem}
-        onSelectProblem={setSelectedProblem}
-        onOpenSettings={() => {
-          setLlmPopupVisible(false);
-          setSettingsVisible(true);
-        }}
-      />
+      )}
 
       <ZoomableImageModal
         visible={zoomSlides !== null}
@@ -902,8 +1008,7 @@ export default function App() {
         onChangeLinks={handleUpdateLinks}
         preprocessEnabled={preprocessEnabled}
         onChangePreprocess={handleSetPreprocess}
-        responseLang={responseLang}
-        onChangeResponseLang={handleSetResponseLang}
+        onOpenLink={(link) => openBrowser(link.url, link.title, 'settings', false)}
       />
     </SafeAreaView>
   );
@@ -1289,7 +1394,41 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top'
   },
   textAreaTall: {
-    minHeight: 220
+    minHeight: 160
+  },
+  taskInput: {
+    minHeight: 72,
+    textAlignVertical: 'top',
+    marginTop: 8
+  },
+  browserPane: {
+    flex: 1
+  },
+  browserBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8
+  },
+  browserTitle: {
+    flex: 1,
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '700'
+  },
+  browserHint: {
+    color: '#a5b4fc',
+    fontSize: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 6
+  },
+  browserSpinner: {
+    marginTop: 24
+  },
+  webview: {
+    flex: 1,
+    backgroundColor: '#ffffff'
   },
   openPromptBtn: {
     marginTop: 8,
