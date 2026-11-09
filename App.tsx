@@ -11,6 +11,7 @@ import {
   Alert,
   Platform,
   ActivityIndicator,
+  Share,
   StatusBar as RNStatusBar
 } from 'react-native';
 import { WebView } from 'react-native-webview';
@@ -542,6 +543,16 @@ export default function App() {
     openBrowser(selectedLink.url, selectedLink.title, 'prompt', true);
   };
 
+  const handleSharePrompt = async () => {
+    const prompt = buildTaskPrompt(taskText, responseLang, ocrText);
+    if (!prompt.trim()) return;
+    try {
+      await Share.share({ message: prompt });
+    } catch {
+      // The sheet was dismissed.
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
@@ -926,6 +937,13 @@ export default function App() {
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
               <Text style={styles.cardTitle}>Prompt</Text>
+              <TouchableOpacity
+                onPress={handleSharePrompt}
+                style={styles.shareBtn}
+                accessibilityLabel="Share"
+              >
+                <Ionicons name="share-social-outline" size={18} color="#f8fafc" />
+              </TouchableOpacity>
             </View>
 
             <Text style={styles.fieldLabel}>Task</Text>
@@ -1128,6 +1146,14 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
     fontSize: 15,
     fontWeight: '700'
+  },
+  shareBtn: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: '#334155'
   },
   smallHeaderBtn: {
     backgroundColor: '#334155',
