@@ -50,14 +50,26 @@ import {
 } from './src/components/TesseractOcrBridge';
 import { SettingsModal } from './src/components/SettingsModal';
 import { ComboBox } from './src/components/ComboBox';
+import { HomeMenu } from './src/components/HomeMenu';
+import { QuizScreen } from './src/components/QuizScreen';
 import { ZoomableImageModal, ZoomSlide } from './src/components/ZoomableImageModal';
 import {
+  ASK_LANGUAGE_NAME,
   STUDY_TASKS,
   StudyTaskKey,
   buildTaskPrompt,
   isRtlLanguage,
   taskSentence
 } from './src/llmPrompts';
+import {
+  dueItems,
+  loadStudyData,
+  pageQuestionQuizInstruction,
+  pageWordQuizInstruction
+} from './src/study/quizzes';
+
+type AppPhase = 'home' | 'capture' | 'prompt' | 'browser' | 'quiz';
+type TaskChoice = StudyTaskKey | 'quiz_words' | 'quiz_questions';
 
 function withHttp(url: string): string {
   const trimmed = url.trim();
@@ -97,13 +109,15 @@ export default function App() {
   const [processedPreviews, setProcessedPreviews] = useState<string[]>([]);
   const [preprocessStats, setPreprocessStats] = useState<PreprocessStats[]>([]);
   const [rois, setRois] = useState<RoiBox[]>([]);
-  const [phase, setPhase] = useState<'capture' | 'prompt' | 'browser'>('capture');
+  const [phase, setPhase] = useState<AppPhase>('home');
+  const [dueCount, setDueCount] = useState<number>(0);
+  const [wordCount, setWordCount] = useState<number>(0);
   const [isDrawingRoi, setIsDrawingRoi] = useState<boolean>(false);
   const [ocrRunning, setOcrRunning] = useState<boolean>(false);
   const [ocrStatus, setOcrStatus] = useState<string>('');
   const [ocrPercent, setOcrPercent] = useState<number>(0);
   const [ocrText, setOcrText] = useState<string>('');
-  const [selectedTask, setSelectedTask] = useState<StudyTaskKey>('explain_lines');
+  const [selectedTask, setSelectedTask] = useState<TaskChoice>('explain_lines');
   const [taskText, setTaskText] = useState<string>(
     taskSentence('fra', 'explain_lines')
   );
@@ -115,9 +129,9 @@ export default function App() {
     returnTo: 'prompt' | 'settings';
     copied: boolean;
   } | null>(null);
-  const [screenUnderBrowser, setScreenUnderBrowser] = useState<'capture' | 'prompt'>(
-    'prompt'
-  );
+  const [screenUnderBrowser, setScreenUnderBrowser] = useState<
+    'capture' | 'prompt' | 'quiz'
+  >('prompt');
 
   // Per-page OCR language selection & Settings state
   const [selectedLangs, setSelectedLangs] = useState<OcrLanguageCode[]>([
@@ -132,12 +146,20 @@ export default function App() {
   const ocrBridgeRef = useRef<TesseractOcrBridgeHandle>(null);
   const scrollRef = useRef<ScrollView>(null);
 
-  const showPhase = (next: 'capture' | 'prompt' | 'browser') => {
+  const showPhase = (next: AppPhase) => {
     setPhase(next);
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
     });
   };
+
+  useEffect(() => {
+    if (phase !== 'home') return;
+    loadStudyData().then((data) => {
+      setWordCount(data.items.length);
+      setDueCount(dueItems(data.items).length);
+    });
+  }, [phase]);
 
   useEffect(() => {
     (async () => {
@@ -162,6 +184,15 @@ export default function App() {
 
   useEffect(() => {
     if (taskCustom) return;
+    const language = ASK_LANGUAGE_NAME[responseLang];
+    if (selectedTask === 'quiz_words') {
+      setTaskText(pageWordQuizInstruction(language));
+      return;
+    }
+    if (selectedTask === 'quiz_questions') {
+      setTaskText(pageQuestionQuizInstruction(language));
+      return;
+    }
     setTaskText(taskSentence(responseLang, selectedTask));
   }, [responseLang, selectedTask, taskCustom]);
 
@@ -496,7 +527,7 @@ export default function App() {
     returnTo: 'prompt' | 'settings',
     copied: boolean
   ) => {
-    if (phase === 'capture' || phase === 'prompt') {
+    if (phase === 'capture' || phase === 'prompt' || phase === 'quiz') {
       setScreenUnderBrowser(phase);
     }
     setBrowser({ url: withHttp(url), title, returnTo, copied });
@@ -515,7 +546,7 @@ export default function App() {
   const goHome = () => {
     setBrowser(null);
     setSettingsVisible(false);
-    showPhase('capture');
+    showPhase('home');
   };
 
   const handleBack = () => {
@@ -525,10 +556,33 @@ export default function App() {
     }
     if (phase === 'prompt') {
       showPhase('capture');
+      return;
+    }
+    if (phase === 'capture' || phase === 'quiz') {
+      showPhase('home');
     }
   };
 
+  const askLesson = async (prompt: string) => {
+    if (!selectedLink) return;
+    await Clipboard.setStringAsync(prompt);
+    openBrowser(selectedLink.url, selectedLink.title, 'prompt', true);
+  };
+
   const handleChooseTask = (id: string) => {
+    const language = ASK_LANGUAGE_NAME[responseLang];
+    if (id === 'quiz_words') {
+      setSelectedTask('quiz_words');
+      setTaskCustom(false);
+      setTaskText(pageWordQuizInstruction(language));
+      return;
+    }
+    if (id === 'quiz_questions') {
+      setSelectedTask('quiz_questions');
+      setTaskCustom(false);
+      setTaskText(pageQuestionQuizInstruction(language));
+      return;
+    }
     const task = STUDY_TASKS.find((item) => item.key === id);
     if (!task) return;
     setSelectedTask(task.key);
@@ -629,7 +683,7 @@ export default function App() {
       <View style={styles.header}>
         <View style={styles.brandRow}>
           <View style={styles.backSlot}>
-            {phase !== 'capture' && (
+            {phase !== 'home' && (
               <TouchableOpacity
                 onPress={handleBack}
                 style={styles.backBtn}
@@ -651,7 +705,7 @@ export default function App() {
             <View>
               <Text style={styles.brandTitle}>StudyLens</Text>
               <Text style={styles.brandSubtitle}>
-                Snap • ROI • Local OCR • Ask LLM
+                Scanner • Quiz
               </Text>
             </View>
           </TouchableOpacity>
@@ -676,7 +730,7 @@ export default function App() {
           </View>
           {browser.copied && (
             <Text style={styles.browserHint}>
-              Prompt copied. Paste it into the page.
+              Prompt copied. Paste it into the page, then copy the answer and add it to a quiz.
             </Text>
           )}
           <WebView
@@ -702,6 +756,36 @@ export default function App() {
         contentContainerStyle={styles.scrollContent}
         scrollEnabled={!isDrawingRoi}
       >
+        {phase === 'home' && (
+          <HomeMenu
+            items={[
+              {
+                key: 'scan',
+                title: 'Scanner une page',
+                detail:
+                  'Photo, explication, exercice, résumé, ou les mots importants de la page.',
+                onPress: () => showPhase('capture')
+              },
+              {
+                key: 'quiz',
+                title: 'Quiz',
+                detail:
+                  'Crée un quiz ou ajoute-y des mots et des questions. Le niveau suit tes réponses.',
+                meta: wordCount === 0 ? 'vide' : `${dueCount} maintenant`,
+                onPress: () => showPhase('quiz')
+              }
+            ]}
+          />
+        )}
+
+        {phase === 'quiz' && (
+          <QuizScreen
+            answerLanguage={ASK_LANGUAGE_NAME[responseLang] || 'French'}
+            linkTitle={selectedLink?.title || 'le modèle'}
+            onAsk={askLesson}
+          />
+        )}
+
         {phase === 'capture' && (
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
@@ -949,10 +1033,14 @@ export default function App() {
             <Text style={styles.fieldLabel}>Task</Text>
             <ComboBox
               value={selectedTask}
-              options={STUDY_TASKS.map((task) => ({
-                id: task.key,
-                label: task.label
-              }))}
+              options={[
+                ...STUDY_TASKS.map((task) => ({
+                  id: task.key,
+                  label: task.label
+                })),
+                { id: 'quiz_words', label: 'Quiz words' },
+                { id: 'quiz_questions', label: 'Quiz questions' }
+              ]}
               onChange={handleChooseTask}
             />
             <TextInput
@@ -971,7 +1059,6 @@ export default function App() {
               }}
               textAlign={answerDirection === 'rtl' ? 'right' : 'left'}
             />
-
             <Text style={styles.fieldLabel}>Answer in</Text>
             <View style={styles.flagRow}>
               {AVAILABLE_OCR_LANGUAGES.map((lang) => {
