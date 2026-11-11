@@ -132,6 +132,7 @@ export default function App() {
   const [screenUnderBrowser, setScreenUnderBrowser] = useState<
     'capture' | 'prompt' | 'quiz'
   >('prompt');
+  const [resumeQuizEdit, setResumeQuizEdit] = useState(false);
 
   // Per-page OCR language selection & Settings state
   const [selectedLangs, setSelectedLangs] = useState<OcrLanguageCode[]>([
@@ -546,6 +547,7 @@ export default function App() {
   const goHome = () => {
     setBrowser(null);
     setSettingsVisible(false);
+    setResumeQuizEdit(false);
     showPhase('home');
   };
 
@@ -559,12 +561,14 @@ export default function App() {
       return;
     }
     if (phase === 'capture' || phase === 'quiz') {
+      if (phase === 'quiz') setResumeQuizEdit(false);
       showPhase('home');
     }
   };
 
   const askLesson = async (prompt: string) => {
     if (!selectedLink) return;
+    if (phase === 'quiz') setResumeQuizEdit(true);
     await Clipboard.setStringAsync(prompt);
     openBrowser(selectedLink.url, selectedLink.title, 'prompt', true);
   };
@@ -770,7 +774,7 @@ export default function App() {
                 key: 'quiz',
                 title: 'Quiz',
                 detail:
-                  'Crée un quiz ou ajoute-y des mots et des questions. Le niveau suit tes réponses.',
+                  'Plusieurs quiz. Modifie chacun pour y ajouter des questions, une par une ou en collant une réponse.',
                 meta: wordCount === 0 ? 'vide' : `${dueCount} maintenant`,
                 onPress: () => showPhase('quiz')
               }
@@ -782,6 +786,7 @@ export default function App() {
           <QuizScreen
             answerLanguage={ASK_LANGUAGE_NAME[responseLang] || 'French'}
             linkTitle={selectedLink?.title || 'le modèle'}
+            resumeEdit={resumeQuizEdit}
             onAsk={askLesson}
           />
         )}

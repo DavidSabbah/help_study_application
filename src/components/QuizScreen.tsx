@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  Alert,
   Text,
   TextInput,
   TouchableOpacity,
   View,
   StyleSheet
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import {
   ItemKind,
@@ -16,32 +16,38 @@ import {
   addManualItem,
   askPrompt,
   createQuiz,
+  deleteQuiz,
+  deleteQuizItem,
   dueItems,
   gradeQuizItem,
   loadStudyData,
-  quizLevel
+  quizLevel,
+  renameQuiz,
+  setOpenQuiz
 } from '../study/quizzes';
-
-const OPEN_QUIZ_KEY = '@studylens/open_quiz_v1';
 
 type Pane = 'list' | 'detail' | 'play';
 
 interface QuizScreenProps {
   answerLanguage: string;
   linkTitle: string;
+  resumeEdit: boolean;
   onAsk: (prompt: string) => void;
 }
 
 export const QuizScreen: React.FC<QuizScreenProps> = ({
   answerLanguage,
   linkTitle,
+  resumeEdit,
   onAsk
 }) => {
   const [pane, setPane] = useState<Pane>('list');
   const [quizzes, setQuizzes] = useState<StudyQuiz[]>([]);
   const [items, setItems] = useState<QuizItem[]>([]);
   const [title, setTitle] = useState('');
+  const [editTitle, setEditTitle] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [playReturn, setPlayReturn] = useState<Pane>('list');
   const [reply, setReply] = useState('');
   const [manualKind, setManualKind] = useState<ItemKind>('question');
   const [manualPrompt, setManualPrompt] = useState('');
@@ -58,34 +64,78 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   }, []);
 
   useEffect(() => {
-    reload().then(async (data) => {
-      const openId = await AsyncStorage.getItem(OPEN_QUIZ_KEY);
-      if (openId && data.quizzes.some((quiz) => quiz.id === openId)) {
-        setSelectedId(openId);
-        setPane('detail');
-      }
+    reload().then((data) => {
+      if (!resumeEdit || !data.openQuizId) return;
+      const quiz = data.quizzes.find((item) => item.id === data.openQuizId);
+      if (!quiz) return;
+      setSelectedId(quiz.id);
+      setEditTitle(quiz.title);
+      setPane('detail');
     });
-  }, [reload]);
+  }, [reload, resumeEdit]);
 
   const selected = quizzes.find((quiz) => quiz.id === selectedId) || null;
   const selectedItems = items.filter((item) => item.quizId === selectedId);
   const level = quizLevel(selectedItems);
 
-  const openQuiz = (quiz: StudyQuiz) => {
+  const openModify = (quiz: StudyQuiz) => {
     setSelectedId(quiz.id);
+    setEditTitle(quiz.title);
     setStatus('');
     setReply('');
+    setManualPrompt('');
+    setManualAnswer('');
     setPane('detail');
-    AsyncStorage.setItem(OPEN_QUIZ_KEY, quiz.id);
+    setOpenQuiz(quiz.id);
   };
 
   const makeQuiz = async () => {
     const name = title.trim();
     if (!name) return;
-    const quiz = await createQuiz(name);
+    await createQuiz(name);
     setTitle('');
+    setStatus(`« ${name} » est ajouté. Tu peux en créer d'autres.`);
     await reload();
-    openQuiz(quiz);
+  };
+
+  const confirmRemove = (quiz: StudyQuiz) => {
+    Alert.alert(
+      'Supprimer ce quiz',
+      `« ${quiz.title} » et ses questions seront effacés de ce téléphone.`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteQuiz(quiz.id);
+            if (selectedId === quiz.id) {
+              setSelectedId(null);
+              setPane('list');
+            }
+            setStatus(`« ${quiz.title} » est supprimé.`);
+            await reload();
+          }
+        }
+      ]
+    );
+  };
+
+  const saveName = async () => {
+    if (!selectedId) return;
+    const saved = await renameQuiz(selectedId, editTitle);
+    if (!saved) {
+      setStatus('Écris un nom.');
+      return;
+    }
+    setStatus('Nom enregistré.');
+    await reload();
+  };
+
+  const removeItem = async (id: string) => {
+    await deleteQuizItem(id);
+    setStatus('Question retirée.');
+    await reload();
   };
 
   const askMore = () => {
@@ -136,11 +186,13 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     await reload();
   };
 
-  const startPlay = async () => {
+  const startPlay = async (quizId: string, backTo: Pane) => {
+    setSelectedId(quizId);
     const data = await reload();
-    const mine = data.items.filter((item) => item.quizId === selectedId);
+    const mine = data.items.filter((item) => item.quizId === quizId);
     setQueue(dueItems(mine));
     setRevealed(false);
+    setPlayReturn(backTo);
     setPane('play');
   };
 
@@ -160,7 +212,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     return (
       <View style={styles.card}>
         <View style={styles.topRow}>
-          <TouchableOpacity onPress={() => setPane('detail')}>
+          <TouchableOpacity onPress={() => setPane(playReturn)}>
             <Text style={styles.link}>{selected.title}</Text>
           </TouchableOpacity>
           <Text style={styles.level}>Niveau {quizLevel(selectedItems)}/10</Text>
@@ -205,20 +257,31 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
       <View style={styles.card}>
         <TouchableOpacity
           onPress={() => {
+            setStatus('');
             setPane('list');
-            AsyncStorage.removeItem(OPEN_QUIZ_KEY);
+            setOpenQuiz(null);
           }}
         >
           <Text style={styles.link}>Tous les quiz</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>{selected.title}</Text>
+        <Text style={styles.label}>Nom du quiz</Text>
+        <TextInput
+          style={styles.input}
+          value={editTitle}
+          onChangeText={setEditTitle}
+          placeholder="Nom du quiz"
+          placeholderTextColor="#64748b"
+        />
+        <TouchableOpacity onPress={saveName} style={styles.secondary}>
+          <Text style={styles.secondaryText}>Enregistrer le nom</Text>
+        </TouchableOpacity>
         <Text style={styles.level}>
-          Niveau {level}/10 · {selectedItems.length} élément{selectedItems.length > 1 ? 's' : ''} · {waiting} maintenant
+          Niveau {level}/10 · {selectedItems.length} question{selectedItems.length > 1 ? 's' : ''} · {waiting} maintenant
         </Text>
-        <Text style={styles.help}>
-          Le niveau monte quand les réponses tiennent dans le temps. La prochaine demande au modèle vise un cran au-dessus.
-        </Text>
-        <TouchableOpacity onPress={startPlay} style={styles.primary}>
+        <TouchableOpacity
+          onPress={() => selectedId && startPlay(selectedId, 'detail')}
+          style={styles.primary}
+        >
           <Text style={styles.primaryText}>
             {waiting > 0 ? 'Commencer' : 'Rien à revoir'}
           </Text>
@@ -226,7 +289,21 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
         <TouchableOpacity onPress={askMore} style={styles.secondary}>
           <Text style={styles.secondaryText}>Demander de nouveaux éléments</Text>
         </TouchableOpacity>
-        <Text style={styles.label}>Ajouter à la main</Text>
+        {selectedItems.length > 0 && (
+          <View style={styles.questionList}>
+            {selectedItems.map((item) => (
+              <View key={item.id} style={styles.questionRow}>
+                <Text style={styles.questionText} numberOfLines={2}>
+                  {item.kind === 'word' ? 'Mot' : 'Question'} · {item.prompt}
+                </Text>
+                <TouchableOpacity onPress={() => removeItem(item.id)}>
+                  <Text style={styles.removeText}>Retirer</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+        <Text style={styles.label}>Ajouter une question</Text>
         <View style={styles.row}>
           <TouchableOpacity
             onPress={() => setManualKind('word')}
@@ -284,10 +361,10 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   return (
     <View style={styles.wrap}>
       <Text style={styles.help}>
-        Un quiz par sujet : araméen, chinois, Levinas, ou autre. Tu le crées, tu y ajoutes des mots ou des questions, puis il te les redemande selon ton niveau.
+        Tu peux en garder autant que tu veux. Modifier un quiz sert à y ajouter des questions, une par une, ou à coller la réponse d'un modèle.
       </Text>
       <View style={styles.card}>
-        <Text style={styles.label}>Nouveau quiz</Text>
+        <Text style={styles.label}>Ajouter un quiz</Text>
         <TextInput
           style={styles.input}
           value={title}
@@ -296,23 +373,45 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
           placeholderTextColor="#64748b"
         />
         <TouchableOpacity onPress={makeQuiz} style={styles.primary}>
-          <Text style={styles.primaryText}>Créer</Text>
+          <Text style={styles.primaryText}>Ajouter</Text>
         </TouchableOpacity>
+        {status.length > 0 && <Text style={styles.status}>{status}</Text>}
       </View>
+      {quizzes.length === 0 && (
+        <Text style={styles.help}>Aucun quiz pour l'instant.</Text>
+      )}
       {quizzes.map((quiz) => {
         const mine = items.filter((item) => item.quizId === quiz.id);
         const waiting = dueItems(mine).length;
         return (
-          <TouchableOpacity key={quiz.id} onPress={() => openQuiz(quiz)} style={styles.card}>
-            <View style={styles.topRow}>
-              <Text style={styles.title}>{quiz.title}</Text>
-              <Text style={styles.level}>Niveau {quizLevel(mine)}/10</Text>
+          <View key={quiz.id} style={styles.card}>
+            <View style={styles.quizHead}>
+              <View style={styles.frontActions}>
+                <TouchableOpacity onPress={() => openModify(quiz)} style={styles.modifyBtn}>
+                  <Text style={styles.frontText}>Modifier</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => confirmRemove(quiz)} style={styles.removeBtn}>
+                  <Text style={styles.frontText}>Supprimer</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.quizBody}>
+                <Text style={styles.title}>{quiz.title}</Text>
+                <Text style={styles.help}>
+                  Niveau {quizLevel(mine)}/10 · {mine.length} question{mine.length > 1 ? 's' : ''}
+                  {waiting > 0 ? ` · ${waiting} maintenant` : ''}
+                </Text>
+              </View>
             </View>
-            <Text style={styles.help}>
-              {mine.length} élément{mine.length > 1 ? 's' : ''}
-              {waiting > 0 ? ` · ${waiting} à revoir` : ''}
-            </Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => startPlay(quiz.id, 'list')}
+              style={mine.length > 0 ? styles.secondary : styles.secondaryMuted}
+              disabled={mine.length === 0}
+            >
+              <Text style={styles.secondaryText}>
+                {mine.length > 0 ? 'Commencer' : 'Ajoute des questions avec Modifier'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         );
       })}
     </View>
@@ -336,6 +435,62 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8
+  },
+  quizHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10
+  },
+  frontActions: {
+    gap: 6
+  },
+  quizBody: {
+    flex: 1,
+    gap: 4
+  },
+  modifyBtn: {
+    backgroundColor: '#4338ca',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  removeBtn: {
+    backgroundColor: '#7f1d1d',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  frontText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  secondaryMuted: {
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  questionList: {
+    gap: 8
+  },
+  questionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  questionText: {
+    flex: 1,
+    color: '#e2e8f0',
+    fontSize: 14,
+    lineHeight: 20
+  },
+  removeText: {
+    color: '#fecaca',
+    fontSize: 13,
+    fontWeight: '700'
   },
   title: {
     color: '#f8fafc',

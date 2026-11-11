@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 
 const STORAGE_KEY = '@studylens/quizzes_v1';
 const LEGACY_KEY = '@studylens/word_cards_v1';
+const OPEN_QUIZ_KEY = '@studylens/open_quiz_v1';
+const STUDY_DIR = 'studylens';
+const STUDY_FILE = 'quizzes.json';
+const STUDY_TMP = 'quizzes.json.tmp';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AGAIN_MS = 10 * 60 * 1000;
 
@@ -30,6 +35,7 @@ export interface QuizItem {
 interface StudyData {
   quizzes: StudyQuiz[];
   items: QuizItem[];
+  openQuizId: string | null;
 }
 
 interface LegacyCard {
@@ -195,28 +201,135 @@ function schedule(item: QuizItem, grade: QuizGrade, now: number): QuizItem {
   return next;
 }
 
-async function readData(): Promise<StudyData> {
+function emptyData(): StudyData {
+  return { quizzes: [], items: [], openQuizId: null };
+}
+
+function snapshot(data: StudyData): string {
+  return JSON.stringify({
+    schema: 1,
+    quizzes: data.quizzes,
+    items: data.items,
+    openQuizId: data.openQuizId
+  });
+}
+
+function isQuiz(value: unknown): value is StudyQuiz {
+  if (!value || typeof value !== 'object') return false;
+  const quiz = value as StudyQuiz;
+  return typeof quiz.id === 'string' && typeof quiz.title === 'string';
+}
+
+function isItem(value: unknown): value is QuizItem {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as QuizItem;
+  return (
+    typeof item.id === 'string' &&
+    typeof item.quizId === 'string' &&
+    (item.kind === 'word' || item.kind === 'question') &&
+    typeof item.prompt === 'string' &&
+    typeof item.answer === 'string'
+  );
+}
+
+function normalize(parsed: unknown, fallbackOpenId: string | null): StudyData | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value = parsed as {
+    quizzes?: unknown;
+    items?: unknown;
+    openQuizId?: unknown;
+  };
+  if (!Array.isArray(value.quizzes) && !Array.isArray(value.items)) return null;
+  const openQuizId =
+    typeof value.openQuizId === 'string' ? value.openQuizId : fallbackOpenId;
+  return {
+    quizzes: Array.isArray(value.quizzes) ? value.quizzes.filter(isQuiz) : [],
+    items: Array.isArray(value.items) ? value.items.filter(isItem) : [],
+    openQuizId
+  };
+}
+
+function richer(fileData: StudyData | null, stored: StudyData | null): StudyData {
+  if (!fileData) return stored || emptyData();
+  if (!stored) return fileData;
+  const fileScore = fileData.items.length * 1000 + fileData.quizzes.length;
+  const storedScore = stored.items.length * 1000 + stored.quizzes.length;
+  const chosen = storedScore > fileScore ? stored : fileData;
+  const other = chosen === fileData ? stored : fileData;
+  return { ...chosen, openQuizId: chosen.openQuizId || other.openQuizId };
+}
+
+function studyDir(): string | null {
+  const root = FileSystem.documentDirectory;
+  if (!root) return null;
+  return `${root}${STUDY_DIR}/`;
+}
+
+async function readJsonFile(path: string, fallbackOpenId: string | null): Promise<StudyData | null> {
+  try {
+    const info = await FileSystem.getInfoAsync(path);
+    if (!info.exists) return null;
+    return normalize(JSON.parse(await FileSystem.readAsStringAsync(path)), fallbackOpenId);
+  } catch {
+    return null;
+  }
+}
+
+async function readDurableFile(fallbackOpenId: string | null): Promise<StudyData | null> {
+  const dir = studyDir();
+  if (!dir) return null;
+  const main = await readJsonFile(`${dir}${STUDY_FILE}`, fallbackOpenId);
+  if (main) return main;
+  return readJsonFile(`${dir}${STUDY_TMP}`, fallbackOpenId);
+}
+
+async function writeDurableFile(payload: string): Promise<void> {
+  const root = studyDir();
+  if (!root) return;
+  const info = await FileSystem.getInfoAsync(root);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(root, { intermediates: true });
+  }
+  const tmp = `${root}${STUDY_TMP}`;
+  const dest = `${root}${STUDY_FILE}`;
+  await FileSystem.writeAsStringAsync(tmp, payload);
+  JSON.parse(await FileSystem.readAsStringAsync(tmp));
+  await FileSystem.writeAsStringAsync(dest, payload);
+  await FileSystem.deleteAsync(tmp, { idempotent: true });
+}
+
+async function readAsyncStore(): Promise<StudyData | null> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as StudyData;
-      return {
-        quizzes: Array.isArray(parsed.quizzes) ? parsed.quizzes : [],
-        items: Array.isArray(parsed.items) ? parsed.items : []
-      };
-    }
+    const openId = await AsyncStorage.getItem(OPEN_QUIZ_KEY);
+    if (!raw) return null;
+    return normalize(JSON.parse(raw), openId);
   } catch {
-    return { quizzes: [], items: [] };
+    return null;
   }
-  return migrateLegacy();
+}
+
+async function readData(): Promise<StudyData> {
+  const stored = await readAsyncStore();
+  const fromFile = await readDurableFile(stored?.openQuizId || null);
+  let data = richer(fromFile, stored);
+  if (data.quizzes.length === 0 && data.items.length === 0) {
+    data = await migrateLegacy();
+  }
+  if (snapshot(fromFile || emptyData()) !== snapshot(data) || snapshot(stored || emptyData()) !== snapshot(data)) {
+    if (data.quizzes.length > 0 || data.items.length > 0 || data.openQuizId) {
+      await saveData(data);
+    }
+  }
+  return data;
 }
 
 async function migrateLegacy(): Promise<StudyData> {
   try {
     const raw = await AsyncStorage.getItem(LEGACY_KEY);
-    if (!raw) return { quizzes: [], items: [] };
+    if (!raw) return emptyData();
     const cards = JSON.parse(raw) as LegacyCard[];
-    if (!Array.isArray(cards) || cards.length === 0) return { quizzes: [], items: [] };
+    if (!Array.isArray(cards) || cards.length === 0) return emptyData();
     const bySource = new Map<string, LegacyCard[]>();
     cards.forEach((card) => {
       const title = (card.source || 'Quiz').trim() || 'Quiz';
@@ -224,7 +337,7 @@ async function migrateLegacy(): Promise<StudyData> {
       group.push(card);
       bySource.set(title, group);
     });
-    const data: StudyData = { quizzes: [], items: [] };
+    const data: StudyData = { quizzes: [], items: [], openQuizId: null };
     let index = 0;
     bySource.forEach((group, title) => {
       const quizId = `quiz-legacy-${index}`;
@@ -249,12 +362,26 @@ async function migrateLegacy(): Promise<StudyData> {
     await saveData(data);
     return data;
   } catch {
-    return { quizzes: [], items: [] };
+    return emptyData();
   }
 }
 
 async function saveData(data: StudyData): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  const payload = snapshot(data);
+  try {
+    await writeDurableFile(payload);
+  } catch {
+    // The store below still keeps this save if the file cannot be written.
+  }
+  await AsyncStorage.setItem(STORAGE_KEY, payload);
+  if (data.openQuizId) await AsyncStorage.setItem(OPEN_QUIZ_KEY, data.openQuizId);
+  else await AsyncStorage.removeItem(OPEN_QUIZ_KEY);
+}
+
+export async function setOpenQuiz(id: string | null): Promise<void> {
+  const data = await readData();
+  data.openQuizId = id;
+  await saveData(data);
 }
 
 export async function loadStudyData(): Promise<StudyData> {
@@ -271,6 +398,31 @@ export async function createQuiz(title: string): Promise<StudyQuiz> {
   data.quizzes.unshift(quiz);
   await saveData(data);
   return quiz;
+}
+
+export async function renameQuiz(id: string, title: string): Promise<boolean> {
+  const name = title.trim();
+  if (!name) return false;
+  const data = await readData();
+  const quiz = data.quizzes.find((item) => item.id === id);
+  if (!quiz) return false;
+  quiz.title = name;
+  await saveData(data);
+  return true;
+}
+
+export async function deleteQuiz(id: string): Promise<void> {
+  const data = await readData();
+  data.quizzes = data.quizzes.filter((quiz) => quiz.id !== id);
+  data.items = data.items.filter((item) => item.quizId !== id);
+  if (data.openQuizId === id) data.openQuizId = null;
+  await saveData(data);
+}
+
+export async function deleteQuizItem(id: string): Promise<void> {
+  const data = await readData();
+  data.items = data.items.filter((item) => item.id !== id);
+  await saveData(data);
 }
 
 export async function addManualItem(
