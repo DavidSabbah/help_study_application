@@ -55,6 +55,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   const [status, setStatus] = useState('');
   const [revealed, setRevealed] = useState(false);
   const [queue, setQueue] = useState<QuizItem[]>([]);
+  const [questionIndex, setQuestionIndex] = useState(0);
 
   const reload = useCallback(async () => {
     const data = await loadStudyData();
@@ -85,6 +86,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     setReply('');
     setManualPrompt('');
     setManualAnswer('');
+    setQuestionIndex(0);
     setPane('detail');
     setOpenQuiz(quiz.id);
   };
@@ -134,7 +136,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
 
   const removeItem = async (id: string) => {
     await deleteQuizItem(id);
-    setStatus('Question retirée.');
+    setStatus('Question effacée.');
     await reload();
   };
 
@@ -165,7 +167,9 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
         (result.updated ? `, ${result.updated} mis à jour.` : '.')
     );
     setReply('');
-    await reload();
+    const data = await reload();
+    const count = data.items.filter((item) => item.quizId === selectedId).length;
+    setQuestionIndex(Math.max(0, count - 1));
   };
 
   const saveManual = async () => {
@@ -183,7 +187,9 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     setManualPrompt('');
     setManualAnswer('');
     setStatus(manualKind === 'word' ? 'Mot ajouté.' : 'Question ajoutée.');
-    await reload();
+    const data = await reload();
+    const count = data.items.filter((item) => item.quizId === selectedId).length;
+    setQuestionIndex(Math.max(0, count - 1));
   };
 
   const startPlay = async (quizId: string, backTo: Pane) => {
@@ -289,20 +295,12 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
         <TouchableOpacity onPress={askMore} style={styles.secondary}>
           <Text style={styles.secondaryText}>Demander de nouveaux éléments</Text>
         </TouchableOpacity>
-        {selectedItems.length > 0 && (
-          <View style={styles.questionList}>
-            {selectedItems.map((item) => (
-              <View key={item.id} style={styles.questionRow}>
-                <Text style={styles.questionText} numberOfLines={2}>
-                  {item.kind === 'word' ? 'Mot' : 'Question'} · {item.prompt}
-                </Text>
-                <TouchableOpacity onPress={() => removeItem(item.id)}>
-                  <Text style={styles.removeText}>Retirer</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
-        )}
+        <QuestionPager
+          items={selectedItems}
+          index={questionIndex}
+          onIndex={setQuestionIndex}
+          onDelete={(id) => removeItem(id)}
+        />
         <Text style={styles.label}>Ajouter une question</Text>
         <View style={styles.row}>
           <TouchableOpacity
@@ -418,6 +416,58 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   );
 };
 
+function QuestionPager({
+  items,
+  index,
+  onIndex,
+  onDelete
+}: {
+  items: QuizItem[];
+  index: number;
+  onIndex: (next: number) => void;
+  onDelete: (id: string) => void;
+}) {
+  const count = items.length;
+  const place = count === 0 ? 0 : Math.min(index, count - 1);
+  const current = count === 0 ? null : items[place];
+  const atStart = place <= 0;
+  const atEnd = count === 0 || place >= count - 1;
+  return (
+    <View style={styles.pager}>
+      <Text style={styles.label}>
+        {count} question{count > 1 ? 's' : ''}
+      </Text>
+      <View style={styles.pagerRow}>
+        <TouchableOpacity
+          onPress={() => onIndex(place - 1)}
+          disabled={atStart}
+          style={[styles.pageBtn, atStart && styles.pageBtnOff]}
+        >
+          <Text style={styles.pageBtnText}>{'<'}</Text>
+        </TouchableOpacity>
+        <Text style={styles.pageCount}>{count === 0 ? '0 / 0' : `${place + 1} / ${count}`}</Text>
+        <TouchableOpacity
+          onPress={() => onIndex(place + 1)}
+          disabled={atEnd}
+          style={[styles.pageBtn, atEnd && styles.pageBtnOff]}
+        >
+          <Text style={styles.pageBtnText}>{'>'}</Text>
+        </TouchableOpacity>
+      </View>
+      {current && (
+        <View style={styles.quiz}>
+          <Text style={styles.kind}>{current.kind === 'word' ? 'Mot' : 'Question'}</Text>
+          <Text style={styles.prompt}>{current.prompt}</Text>
+          <Text style={styles.answer}>{current.answer}</Text>
+          <TouchableOpacity onPress={() => onDelete(current.id)} style={styles.removeBtn}>
+            <Text style={styles.frontText}>Effacer</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   wrap: {
     gap: 12
@@ -473,23 +523,37 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155'
   },
-  questionList: {
-    gap: 8
+  pager: {
+    gap: 10
   },
-  questionRow: {
+  pagerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8
   },
-  questionText: {
-    flex: 1,
-    color: '#e2e8f0',
-    fontSize: 14,
-    lineHeight: 20
+  pageBtn: {
+    width: 56,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#4338ca',
+    alignItems: 'center',
+    justifyContent: 'center'
   },
-  removeText: {
-    color: '#fecaca',
-    fontSize: 13,
+  pageBtnOff: {
+    backgroundColor: '#334155',
+    opacity: 0.45
+  },
+  pageBtnText: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '700'
+  },
+  pageCount: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#f8fafc',
+    fontSize: 18,
     fontWeight: '700'
   },
   title: {
