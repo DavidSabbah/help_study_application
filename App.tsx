@@ -52,6 +52,9 @@ import { SettingsModal } from './src/components/SettingsModal';
 import { ComboBox } from './src/components/ComboBox';
 import { HomeMenu } from './src/components/HomeMenu';
 import { QuizScreen } from './src/components/QuizScreen';
+import { FicheScreen } from './src/components/FicheScreen';
+import { debugError, debugLog } from './src/debug/debugLog';
+import { AppCrashBoundary } from './src/debug/AppCrashBoundary';
 import { ZoomableImageModal, ZoomSlide } from './src/components/ZoomableImageModal';
 import {
   ASK_LANGUAGE_NAME,
@@ -74,8 +77,9 @@ import {
   pageQuestionQuizInstruction,
   pageWordQuizInstruction
 } from './src/study/quizzes';
+import { loadFiches } from './src/study/fiches';
 
-type AppPhase = 'home' | 'capture' | 'prompt' | 'browser' | 'quiz';
+type AppPhase = 'home' | 'capture' | 'prompt' | 'browser' | 'quiz' | 'fiches';
 type TaskChoice = StudyTaskKey | 'quiz_words' | 'quiz_questions';
 type PageSource = 'ocr' | 'image';
 
@@ -125,6 +129,7 @@ export default function App() {
   const [phase, setPhase] = useState<AppPhase>('home');
   const [dueCount, setDueCount] = useState<number>(0);
   const [wordCount, setWordCount] = useState<number>(0);
+  const [ficheCount, setFicheCount] = useState<number>(0);
   const [isDrawingRoi, setIsDrawingRoi] = useState<boolean>(false);
   const [ocrRunning, setOcrRunning] = useState<boolean>(false);
   const [ocrStatus, setOcrStatus] = useState<string>('');
@@ -165,6 +170,7 @@ export default function App() {
   const scrollRef = useRef<ScrollView>(null);
 
   const showPhase = (next: AppPhase) => {
+    void debugLog('info', 'nav', next);
     setPhase(next);
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -177,6 +183,7 @@ export default function App() {
       setWordCount(data.items.length);
       setDueCount(needsPractice(data.items));
     });
+    loadFiches().then((fiches) => setFicheCount(fiches.length));
   }, [phase]);
 
   useEffect(() => {
@@ -259,8 +266,10 @@ export default function App() {
   // 1. Capture from Phone Camera or Gallery
   const handleTakePhoto = async () => {
     try {
+      await debugLog('info', 'photo', 'camera open');
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) {
+        await debugLog('warn', 'photo', 'camera permission denied');
         Alert.alert(
           'Camera Permission Required',
           'Please allow camera access to take pictures of your study pages.'
@@ -276,13 +285,21 @@ export default function App() {
 
       if (!res.canceled && res.assets && res.assets[0]) {
         const asset = res.assets[0];
+        await debugLog(
+          'info',
+          'photo',
+          `camera ${asset.width || 0}x${asset.height || 0} ${(asset.uri || '').split(':')[0]}`
+        );
         resetPhotoState({
           uri: asset.uri,
           width: asset.width || 1000,
           height: asset.height || 1300
         });
+      } else {
+        await debugLog('info', 'photo', 'camera canceled');
       }
     } catch (err) {
+      await debugError('photo', err, 'camera failed');
       Alert.alert(
         'Camera Error',
         err instanceof Error ? err.message : String(err)
@@ -292,10 +309,11 @@ export default function App() {
 
   const handlePickGallery = async () => {
     try {
+      await debugLog('info', 'photo', 'gallery open');
       try {
         await ImagePicker.requestMediaLibraryPermissionsAsync();
-      } catch {
-        // Ignore permission check failure on Android Photo Picker
+      } catch (err) {
+        await debugError('photo', err, 'gallery permission check failed');
       }
 
       const res = await ImagePicker.launchImageLibraryAsync({
@@ -305,13 +323,21 @@ export default function App() {
 
       if (!res.canceled && res.assets && res.assets[0]) {
         const asset = res.assets[0];
+        await debugLog(
+          'info',
+          'photo',
+          `gallery ${asset.width || 0}x${asset.height || 0} ${(asset.uri || '').split(':')[0]}`
+        );
         resetPhotoState({
           uri: asset.uri,
           width: asset.width || 1000,
           height: asset.height || 1300
         });
+      } else {
+        await debugLog('info', 'photo', 'gallery canceled');
       }
     } catch (err) {
+      await debugError('photo', err, 'gallery failed');
       Alert.alert(
         'Gallery Error',
         err instanceof Error ? err.message : String(err)
@@ -333,6 +359,7 @@ export default function App() {
         height: sampleAsset.height || 1150
       });
     } catch (err) {
+      await debugError('photo', err, 'sample failed');
       Alert.alert(
         'Could not load sample image',
         err instanceof Error ? err.message : String(err)
@@ -356,6 +383,7 @@ export default function App() {
         height: bookAsset.height || (which === 1 ? 1500 : 2000)
       });
     } catch (err) {
+      await debugError('photo', err, 'book page failed');
       Alert.alert(
         'Could not load real book image',
         err instanceof Error ? err.message : String(err)
@@ -366,6 +394,7 @@ export default function App() {
   const handleRotatePhoto = async (degrees: 90 | -90) => {
     if (!photo) return;
     try {
+      await debugLog('info', 'photo', `rotate ${degrees}`);
       const rotated = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ rotate: degrees }],
@@ -383,6 +412,7 @@ export default function App() {
       setRois([]);
       setProcessedPreviews([]);
     } catch (err) {
+      await debugError('photo', err, 'rotate failed');
       Alert.alert(
         'Rotate Failed',
         err instanceof Error ? err.message : 'Could not rotate image.'
@@ -394,9 +424,11 @@ export default function App() {
     const source = uri || photo?.uri;
     if (!source || savingImage) return;
     try {
+      await debugLog('info', 'photo', 'save to gallery');
       setSavingImage(true);
       const perm = await MediaLibrary.requestPermissionsAsync(true);
       if (!perm.granted) {
+        await debugLog('warn', 'photo', 'gallery save permission denied');
         Alert.alert(
           'Gallery permission',
           'Allow StudyLens to save images so you can inspect them in your gallery.'
@@ -407,6 +439,7 @@ export default function App() {
       await MediaLibrary.saveToLibraryAsync(fileUri);
       setOcrStatus('💾 Image saved to your gallery.');
     } catch (err) {
+      await debugError('photo', err, 'gallery save failed');
       const message = err instanceof Error ? err.message : String(err);
       const needsRebuild = /native module|ExpoMediaLibrary|Cannot find/i.test(
         message
@@ -434,6 +467,7 @@ export default function App() {
     }
 
     try {
+      await debugLog('info', 'photo', `clean ${photo.width}x${photo.height}`);
       setEnhancingPhoto(true);
       setOcrStatus(
         '✨ Cleaning book page (lifting shadows, fixing contrast, straightening the page)...'
@@ -450,6 +484,7 @@ export default function App() {
       }
       ocrBridgeRef.current?.enhanceImage(manip.base64);
     } catch (err) {
+      await debugError('photo', err, 'clean failed');
       setEnhancingPhoto(false);
       Alert.alert(
         'Book Clean Failed',
@@ -461,6 +496,7 @@ export default function App() {
   const handleSelectFullPage = async () => {
     if (!photo) return;
     try {
+      await debugLog('info', 'photo', 'full page crop');
       const actions: ImageManipulator.Action[] =
         photo.width > 2200 ? [{ resize: { width: 2200 } }] : [];
       const full = await ImageManipulator.manipulateAsync(
@@ -481,6 +517,7 @@ export default function App() {
         }
       ]);
     } catch (err) {
+      await debugError('photo', err, 'full page crop failed');
       Alert.alert(
         'Full Page Selection Error',
         err instanceof Error ? err.message : String(err)
@@ -491,6 +528,7 @@ export default function App() {
   // 2. Run Local Tesseract.js OCR on ROI Array
   const handleRunOcr = () => {
     if (rois.length === 0) return;
+    void debugLog('info', 'ocr', `start ${rois.length} ${selectedLangs.join('+')}`);
     setOcrRunning(true);
     setOcrPercent(5);
     setProcessedPreviews([]);
@@ -507,6 +545,7 @@ export default function App() {
   const handleSkipOcr = () => {
     if (rois.length === 0 || ocrRunning || enhancingPhoto || isDrawingRoi) return;
     setPageSource('image');
+    void debugLog('info', 'ocr', `skip ${rois.length}`);
     setOcrText('');
     setOcrStatus('');
     showPhase('prompt');
@@ -587,7 +626,7 @@ export default function App() {
       showPhase('capture');
       return;
     }
-    if (phase === 'capture' || phase === 'quiz') {
+    if (phase === 'capture' || phase === 'quiz' || phase === 'fiches') {
       if (phase === 'quiz') setResumeQuizEdit(false);
       showPhase('home');
     }
@@ -624,6 +663,7 @@ export default function App() {
   const handleExecute = async () => {
     if (!selectedLink) return;
     const withImage = pageSource === 'image';
+    await debugLog('info', 'prompt', withImage ? 'execute image' : 'execute text');
     const prompt = buildTaskPrompt(taskText, responseLang, ocrText, withImage);
     setCopiedPrompt(prompt);
     setPromptFlash(false);
@@ -635,6 +675,7 @@ export default function App() {
     try {
       const images = await loadRoiImages(rois);
       if (images.length === 0) {
+        await debugLog('warn', 'prompt', 'execute without a crop');
         Alert.alert('No crop', 'Draw a region on the photo, or tap Full.');
         return;
       }
@@ -645,6 +686,7 @@ export default function App() {
       });
       openBrowser(selectedLink.url, selectedLink.title, 'prompt', true, paste);
     } catch (err) {
+      await debugError('prompt', err, 'copy image and prompt failed');
       Alert.alert(
         'Copy failed',
         err instanceof Error ? err.message : 'Could not copy the cropped page.'
@@ -674,6 +716,7 @@ export default function App() {
   };
 
   return (
+    <AppCrashBoundary>
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
 
@@ -685,6 +728,7 @@ export default function App() {
           setOcrPercent(pct);
         }}
         onComplete={(text, processedRois, stats) => {
+          void debugLog('info', 'ocr', `done ${text ? text.length : 0} chars`);
           setOcrRunning(false);
           setOcrPercent(100);
           if (processedRois && processedRois.length > 0) {
@@ -732,6 +776,7 @@ export default function App() {
               `✨ Book page cleaned: ${rotPart}Shadows removed • Deskewed ${stats.skewAngle >= 0 ? '+' : ''}${stats.skewAngle}° • Line curve flattened ${stats.curveShiftPx}px`
             );
           } catch (err) {
+            await debugError('photo', err, 'save cleaned page failed');
             setOcrStatus(
               `❌ Could not save cleaned page: ${err instanceof Error ? err.message : String(err)}`
             );
@@ -740,6 +785,7 @@ export default function App() {
           }
         }}
         onError={(err) => {
+          void debugLog('error', 'ocr', err);
           setOcrRunning(false);
           setEnhancingPhoto(false);
           setOcrStatus(`❌ OCR Error: ${err}`);
@@ -865,6 +911,14 @@ export default function App() {
                       ? 'révision'
                       : `${dueCount} à revoir`,
                 onPress: () => showPhase('quiz')
+              },
+              {
+                key: 'fiches',
+                title: 'Fiches',
+                detail:
+                  "Une idée en quelques lignes. Tu peux toutes les revoir, les modifier, ou en tirer au sort.",
+                meta: ficheCount === 0 ? 'vide' : `${ficheCount}`,
+                onPress: () => showPhase('fiches')
               }
             ]}
           />
@@ -878,6 +932,8 @@ export default function App() {
             onAsk={askLesson}
           />
         )}
+
+        {phase === 'fiches' && <FicheScreen />}
 
         {phase === 'capture' && (
         <View style={styles.card}>
@@ -1295,6 +1351,7 @@ export default function App() {
         onOpenLink={(link) => openBrowser(link.url, link.title, 'settings', false)}
       />
     </SafeAreaView>
+    </AppCrashBoundary>
   );
 }
 

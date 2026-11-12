@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { CapturedPhoto, RoiBox } from '../types';
+import { debugError } from '../debug/debugLog';
 
 interface RoiSelectorProps {
   photo: CapturedPhoto;
@@ -601,7 +602,8 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
             croppedUri: cropped?.uri || currentPhoto.uri,
             base64: cropped?.base64
           });
-        } catch {
+        } catch (err) {
+          void debugError('photo', err, 'crop failed');
           onAddRoiRef.current({
             id,
             ...geom,

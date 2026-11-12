@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
+import { debugError } from '../debug/debugLog';
 
 const STORAGE_KEY = '@studylens/quizzes_v1';
 const LEGACY_KEY = '@studylens/word_cards_v1';
@@ -438,8 +439,8 @@ async function saveData(data: StudyData): Promise<void> {
   const payload = snapshot(data);
   try {
     await writeDurableFile(payload);
-  } catch {
-    // The store below still keeps this save if the file cannot be written.
+  } catch (err) {
+    void debugError('quiz', err, 'quiz file save failed');
   }
   await AsyncStorage.setItem(STORAGE_KEY, payload);
   if (data.openQuizId) await AsyncStorage.setItem(OPEN_QUIZ_KEY, data.openQuizId);

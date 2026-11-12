@@ -8,8 +8,10 @@ import {
   ScrollView,
   StyleSheet
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { LlmLink } from '../types';
 import { DEFAULT_LLM_LINKS } from '../storage/settingsStorage';
+import { readDebugLog } from '../debug/debugLog';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -33,6 +35,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState<string>('');
   const [url, setUrl] = useState<string>('');
+  const [logNote, setLogNote] = useState<string>('');
+
+  const copyLog = async () => {
+    try {
+      const text = await readDebugLog();
+      await Clipboard.setStringAsync(
+        text || 'Journal vide. Les lignes de plus de 3 jours sont effacées.'
+      );
+      setLogNote(text ? 'Journal copié.' : 'Journal vide.');
+    } catch (err) {
+      setLogNote(err instanceof Error ? err.message : 'Copie impossible.');
+    }
+  };
 
   const resetForm = () => {
     setEditingId(null);
@@ -106,6 +121,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.sectionBox}>
+              <Text style={styles.sectionTitle}>Journal</Text>
+              <Text style={styles.optionHint}>
+                Les 3 derniers jours, taille limitée. Copie-le après un plantage sur le téléphone.
+              </Text>
+              <TouchableOpacity onPress={copyLog} style={styles.resetBtn}>
+                <Text style={styles.resetBtnText}>Copier le journal</Text>
+              </TouchableOpacity>
+              {logNote.length > 0 && <Text style={styles.optionHint}>{logNote}</Text>}
+            </View>
+
+            <View style={[styles.sectionBox, styles.sectionGap]}>
               <View style={styles.optionRow}>
                 <View style={styles.optionCopy}>
                   <Text style={styles.sectionTitle}>Pre-OCR processing</Text>
