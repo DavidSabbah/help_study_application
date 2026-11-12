@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -12,7 +12,10 @@ import {
   Platform,
   ActivityIndicator,
   Share,
-  StatusBar as RNStatusBar
+  StatusBar as RNStatusBar,
+  AppState,
+  BackHandler,
+  unstable_batchedUpdates
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,7 +45,7 @@ import {
   saveResponseLang,
   saveSelectedOcrLangs
 } from './src/storage/settingsStorage';
-import { RoiSelector } from './src/components/RoiSelector';
+import { RoiSelector, ensureManipulableUri, materializeRoi } from './src/components/RoiSelector';
 import {
   PreprocessStats,
   TesseractOcrBridge,
@@ -78,6 +81,13 @@ import {
   pageWordQuizInstruction
 } from './src/study/quizzes';
 import { loadFiches } from './src/study/fiches';
+import {
+  AppSession,
+  FichePlace,
+  QuizPlace,
+  loadAppSession,
+  saveAppSession
+} from './src/session/appSession';
 
 type AppPhase = 'home' | 'capture' | 'prompt' | 'browser' | 'quiz' | 'fiches';
 type TaskChoice = StudyTaskKey | 'quiz_words' | 'quiz_questions';
@@ -92,6 +102,25 @@ function withHttp(url: string): string {
   const trimmed = url.trim();
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return `https://${trimmed}`;
+}
+
+async function persistCapturedPhoto(asset: {
+  uri: string;
+  width?: number;
+  height?: number;
+}): Promise<CapturedPhoto> {
+  const uri = await ensureManipulableUri(asset.uri);
+  const actions: ImageManipulator.Action[] =
+    (asset.width || 0) > 2400 ? [{ resize: { width: 2400 } }] : [];
+  const saved = await ImageManipulator.manipulateAsync(uri, actions, {
+    compress: 0.92,
+    format: ImageManipulator.SaveFormat.JPEG
+  });
+  return {
+    uri: saved.uri,
+    width: saved.width || asset.width || 1000,
+    height: saved.height || asset.height || 1300
+  };
 }
 
 async function ensureGalleryFile(uri: string): Promise<string> {
@@ -155,6 +184,21 @@ export default function App() {
     'capture' | 'prompt' | 'quiz'
   >('prompt');
   const [resumeQuizEdit, setResumeQuizEdit] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [quizPlace, setQuizPlace] = useState<QuizPlace>({
+    pane: 'list',
+    quizId: null,
+    queueIds: [],
+    revealed: false,
+    playReturn: 'list'
+  });
+  const [fichePlace, setFichePlace] = useState<FichePlace>({
+    pane: 'list',
+    editingId: null,
+    draft: '',
+    deckIds: [],
+    place: 0
+  });
 
   // Per-page OCR language selection & Settings state
   const [selectedLangs, setSelectedLangs] = useState<OcrLanguageCode[]>([
@@ -167,7 +211,11 @@ export default function App() {
   const [zoomIndex, setZoomIndex] = useState<number>(0);
 
   const ocrBridgeRef = useRef<TesseractOcrBridgeHandle>(null);
+  const lastOcrLog = useRef<string>('');
   const scrollRef = useRef<ScrollView>(null);
+  const quizBackRef = useRef<(() => boolean) | null>(null);
+  const ficheBackRef = useRef<(() => boolean) | null>(null);
+  const draftRef = useRef<AppSession | null>(null);
 
   const showPhase = (next: AppPhase) => {
     void debugLog('info', 'nav', next);
@@ -205,6 +253,52 @@ export default function App() {
           : loadedLinks[0]?.id || ''
       );
     })();
+  }, []);
+
+  useEffect(() => {
+    let cancel = false;
+    loadAppSession().then((session) => {
+      if (cancel) return;
+      if (!session) {
+        setHydrated(true);
+        return;
+      }
+      const knownTasks = [
+        'explain_lines',
+        'solve_problem',
+        'notebook_lesson',
+        'summarize',
+        'argument',
+        'raw_only',
+        'quiz_words',
+        'quiz_questions'
+      ];
+      unstable_batchedUpdates(() => {
+        setPhase(session.phase);
+        setPhoto(session.photo);
+        setOriginalPhoto(session.originalPhoto);
+        setIsPhotoCleaned(session.isPhotoCleaned);
+        setRois(session.rois);
+        setOcrText(session.ocrText);
+        setPageSource(session.pageSource);
+        if (knownTasks.includes(session.selectedTask)) {
+          setSelectedTask(session.selectedTask as TaskChoice);
+        }
+        setTaskText(session.taskText);
+        setTaskCustom(session.taskCustom);
+        if (session.selectedLinkId) setSelectedLinkId(session.selectedLinkId);
+        setBrowser(session.browser);
+        setScreenUnderBrowser(session.screenUnderBrowser);
+        setResumeQuizEdit(session.resumeQuizEdit);
+        setSettingsVisible(session.settingsVisible);
+        setQuizPlace(session.quiz);
+        setFichePlace(session.fiche);
+        setHydrated(true);
+      });
+    });
+    return () => {
+      cancel = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -290,11 +384,7 @@ export default function App() {
           'photo',
           `camera ${asset.width || 0}x${asset.height || 0} ${(asset.uri || '').split(':')[0]}`
         );
-        resetPhotoState({
-          uri: asset.uri,
-          width: asset.width || 1000,
-          height: asset.height || 1300
-        });
+        resetPhotoState(await persistCapturedPhoto(asset));
       } else {
         await debugLog('info', 'photo', 'camera canceled');
       }
@@ -328,11 +418,7 @@ export default function App() {
           'photo',
           `gallery ${asset.width || 0}x${asset.height || 0} ${(asset.uri || '').split(':')[0]}`
         );
-        resetPhotoState({
-          uri: asset.uri,
-          width: asset.width || 1000,
-          height: asset.height || 1300
-        });
+        resetPhotoState(await persistCapturedPhoto(asset));
       } else {
         await debugLog('info', 'photo', 'gallery canceled');
       }
@@ -352,12 +438,13 @@ export default function App() {
         require('./assets/sample-philosophy-page.png')
       );
       await sampleAsset.downloadAsync();
-      const uri = sampleAsset.localUri || sampleAsset.uri;
-      resetPhotoState({
-        uri,
-        width: sampleAsset.width || 900,
-        height: sampleAsset.height || 1150
-      });
+      resetPhotoState(
+        await persistCapturedPhoto({
+          uri: sampleAsset.localUri || sampleAsset.uri,
+          width: sampleAsset.width || 900,
+          height: sampleAsset.height || 1150
+        })
+      );
     } catch (err) {
       await debugError('photo', err, 'sample failed');
       Alert.alert(
@@ -376,12 +463,13 @@ export default function App() {
           : require('./assets/real-book-page-2.jpg')
       );
       await bookAsset.downloadAsync();
-      const uri = bookAsset.localUri || bookAsset.uri;
-      resetPhotoState({
-        uri,
-        width: bookAsset.width || (which === 1 ? 2000 : 1500),
-        height: bookAsset.height || (which === 1 ? 1500 : 2000)
-      });
+      resetPhotoState(
+        await persistCapturedPhoto({
+          uri: bookAsset.localUri || bookAsset.uri,
+          width: bookAsset.width || (which === 1 ? 2000 : 1500),
+          height: bookAsset.height || (which === 1 ? 1500 : 2000)
+        })
+      );
     } catch (err) {
       await debugError('photo', err, 'book page failed');
       Alert.alert(
@@ -395,8 +483,9 @@ export default function App() {
     if (!photo) return;
     try {
       await debugLog('info', 'photo', `rotate ${degrees}`);
+      const sourceUri = await ensureManipulableUri(photo.uri);
       const rotated = await ImageManipulator.manipulateAsync(
-        photo.uri,
+        sourceUri,
         [{ rotate: degrees }],
         { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
       );
@@ -474,8 +563,9 @@ export default function App() {
       );
       const actions: ImageManipulator.Action[] =
         photo.width > 2000 ? [{ resize: { width: 2000 } }] : [];
+      const sourceUri = await ensureManipulableUri(photo.uri);
       const manip = await ImageManipulator.manipulateAsync(
-        photo.uri,
+        sourceUri,
         actions,
         { compress: 0.94, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
@@ -499,8 +589,9 @@ export default function App() {
       await debugLog('info', 'photo', 'full page crop');
       const actions: ImageManipulator.Action[] =
         photo.width > 2200 ? [{ resize: { width: 2200 } }] : [];
+      const sourceUri = await ensureManipulableUri(photo.uri);
       const full = await ImageManipulator.manipulateAsync(
-        photo.uri,
+        sourceUri,
         actions,
         { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
@@ -526,9 +617,14 @@ export default function App() {
   };
 
   // 2. Run Local Tesseract.js OCR on ROI Array
-  const handleRunOcr = () => {
-    if (rois.length === 0) return;
-    void debugLog('info', 'ocr', `start ${rois.length} ${selectedLangs.join('+')}`);
+  const handleRunOcr = async () => {
+    if (!photo || rois.length === 0) return;
+    const missing = rois.filter((roi) => !roi.base64).length;
+    await debugLog(
+      'info',
+      'ocr',
+      `start ${rois.length} ${selectedLangs.join('+')} missing-image ${missing}`
+    );
     setOcrRunning(true);
     setOcrPercent(5);
     setProcessedPreviews([]);
@@ -539,7 +635,19 @@ export default function App() {
         ? `Cleaning the page for OCR (${selectedLangs.join('+')})...`
         : `Starting local OCR (${selectedLangs.join('+')})...`
     );
-    ocrBridgeRef.current?.recognizeRois(rois, selectedLangs, shouldPreprocess);
+    try {
+      const images = await Promise.all(rois.map((roi) => materializeRoi(photo, roi)));
+      const ready = rois.map((roi, index) => ({ ...roi, base64: images[index] }));
+      setRois(ready);
+      ocrBridgeRef.current?.recognizeRois(ready, selectedLangs, shouldPreprocess);
+    } catch (err) {
+      setOcrRunning(false);
+      await debugError('ocr', err, 'could not read the cropped region');
+      Alert.alert(
+        'OCR',
+        err instanceof Error ? err.message : 'Could not read the cropped region.'
+      );
+    }
   };
 
   const handleSkipOcr = () => {
@@ -617,20 +725,124 @@ export default function App() {
     showPhase('home');
   };
 
-  const handleBack = () => {
+  const rememberQuiz = useCallback((place: QuizPlace) => {
+    setQuizPlace((prev) =>
+      prev.pane === place.pane &&
+      prev.quizId === place.quizId &&
+      prev.revealed === place.revealed &&
+      prev.playReturn === place.playReturn &&
+      prev.queueIds.join('|') === place.queueIds.join('|')
+        ? prev
+        : place
+    );
+  }, []);
+
+  const rememberFiche = useCallback((place: FichePlace) => {
+    setFichePlace((prev) =>
+      prev.pane === place.pane &&
+      prev.editingId === place.editingId &&
+      prev.draft === place.draft &&
+      prev.place === place.place &&
+      prev.deckIds.join('|') === place.deckIds.join('|')
+        ? prev
+        : place
+    );
+  }, []);
+
+  const handleBack = (): 'exit' | 'stay' => {
+    if (zoomSlides) {
+      setZoomSlides(null);
+      return 'stay';
+    }
+    if (settingsVisible) {
+      setSettingsVisible(false);
+      return 'stay';
+    }
     if (phase === 'browser') {
       backFromBrowser();
-      return;
+      return 'stay';
     }
     if (phase === 'prompt') {
       showPhase('capture');
-      return;
+      return 'stay';
     }
+    if (phase === 'quiz' && quizBackRef.current?.()) return 'stay';
+    if (phase === 'fiches' && ficheBackRef.current?.()) return 'stay';
     if (phase === 'capture' || phase === 'quiz' || phase === 'fiches') {
       if (phase === 'quiz') setResumeQuizEdit(false);
       showPhase('home');
+      return 'stay';
     }
+    return 'exit';
   };
+
+  const backActionRef = useRef(handleBack);
+  backActionRef.current = handleBack;
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      return backActionRef.current() !== 'exit';
+    });
+    return () => sub.remove();
+  }, []);
+
+  draftRef.current = hydrated
+    ? {
+        phase,
+        photo,
+        originalPhoto,
+        isPhotoCleaned,
+        rois,
+        ocrText,
+        pageSource,
+        selectedTask,
+        taskText,
+        taskCustom,
+        selectedLinkId,
+        browser,
+        screenUnderBrowser,
+        resumeQuizEdit,
+        settingsVisible,
+        quiz: quizPlace,
+        fiche: fichePlace
+      }
+    : null;
+
+  useEffect(() => {
+    if (!hydrated || !draftRef.current) return;
+    const handle = setTimeout(() => {
+      if (draftRef.current) void saveAppSession(draftRef.current);
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [
+    hydrated,
+    phase,
+    photo,
+    originalPhoto,
+    isPhotoCleaned,
+    rois,
+    ocrText,
+    pageSource,
+    selectedTask,
+    taskText,
+    taskCustom,
+    selectedLinkId,
+    browser,
+    screenUnderBrowser,
+    resumeQuizEdit,
+    settingsVisible,
+    quizPlace,
+    fichePlace
+  ]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if ((next === 'background' || next === 'inactive') && draftRef.current) {
+        void saveAppSession(draftRef.current);
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   const askLesson = async (prompt: string) => {
     if (!selectedLink) return;
@@ -715,6 +927,14 @@ export default function App() {
     }
   };
 
+  if (!hydrated) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <AppCrashBoundary>
     <SafeAreaView style={styles.safeArea}>
@@ -724,11 +944,17 @@ export default function App() {
       <TesseractOcrBridge
         ref={ocrBridgeRef}
         onProgress={(status, pct) => {
+          if (status !== lastOcrLog.current) {
+            lastOcrLog.current = status;
+            void debugLog('info', 'ocr', `${pct}% ${status}`);
+          }
           setOcrStatus(status);
           setOcrPercent(pct);
         }}
         onComplete={(text, processedRois, stats) => {
-          void debugLog('info', 'ocr', `done ${text ? text.length : 0} chars`);
+          const chars = text ? text.length : 0;
+          const size = stats && stats[0] ? ` ${stats[0].width}x${stats[0].height}` : '';
+          void debugLog(chars > 0 ? 'info' : 'warn', 'ocr', `done ${chars} chars${size}`);
           setOcrRunning(false);
           setOcrPercent(100);
           if (processedRois && processedRois.length > 0) {
@@ -774,6 +1000,11 @@ export default function App() {
             const rotPart = stats.rot90 ? `Auto-rotated ${stats.rot90}° • ` : '';
             setOcrStatus(
               `✨ Book page cleaned: ${rotPart}Shadows removed • Deskewed ${stats.skewAngle >= 0 ? '+' : ''}${stats.skewAngle}° • Line curve flattened ${stats.curveShiftPx}px`
+            );
+            void debugLog(
+              'info',
+              'ocr',
+              `cleaned ${stats.width || 0}x${stats.height || 0} rot ${stats.rot90 || 0} skew ${stats.skewAngle}`
             );
           } catch (err) {
             await debugError('photo', err, 'save cleaned page failed');
@@ -929,11 +1160,20 @@ export default function App() {
             answerLanguage={ASK_LANGUAGE_NAME[responseLang] || 'French'}
             linkTitle={selectedLink?.title || 'le modèle'}
             resumeEdit={resumeQuizEdit}
+            initial={quizPlace}
+            onPlace={rememberQuiz}
+            backRef={quizBackRef}
             onAsk={askLesson}
           />
         )}
 
-        {phase === 'fiches' && <FicheScreen />}
+        {phase === 'fiches' && (
+          <FicheScreen
+            initial={fichePlace}
+            onPlace={rememberFiche}
+            backRef={ficheBackRef}
+          />
+        )}
 
         {phase === 'capture' && (
         <View style={styles.card}>

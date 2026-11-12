@@ -10,8 +10,9 @@ import {
   Alert
 } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system';
 import { CapturedPhoto, RoiBox } from '../types';
-import { debugError } from '../debug/debugLog';
+import { debugError, debugLog } from '../debug/debugLog';
 
 interface RoiSelectorProps {
   photo: CapturedPhoto;
@@ -161,6 +162,26 @@ const toNorm = (
   };
 };
 
+export async function ensureManipulableUri(uri: string): Promise<string> {
+  if (uri.startsWith('file://') && !uri.includes('/android_asset/')) return uri;
+  const dest = `${FileSystem.cacheDirectory || ''}page-${Date.now()}.jpg`;
+  await FileSystem.copyAsync({ from: uri, to: dest });
+  const label = uri.includes(':') ? uri.split(':')[0] : uri;
+  await debugLog('info', 'photo', `copied image into app storage (${label})`);
+  return dest;
+}
+
+async function readBase64(uri: string, inline?: string | null): Promise<string> {
+  if (inline && inline.length > 0) {
+    return inline.includes(',') ? inline.split(',')[1] : inline;
+  }
+  const file = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64
+  });
+  if (!file) throw new Error('The cropped image file is empty.');
+  return file;
+}
+
 async function renderRoiCrop(
   photo: CapturedPhoto,
   geom: NormGeom
@@ -189,20 +210,24 @@ async function renderRoiCrop(
   const cropH = maxY - minY;
   const upright = Math.abs(rotation) < 0.8;
   const crop = { originX: minX, originY: minY, width: cropW, height: cropH };
+  const sourceUri = await ensureManipulableUri(photo.uri);
 
   if (upright) {
     const actions: ImageManipulator.Action[] = [{ crop }];
     if (cropW > 2200) actions.push({ resize: { width: 2200 } });
-    const cropped = await ImageManipulator.manipulateAsync(photo.uri, actions, {
+    const cropped = await ImageManipulator.manipulateAsync(sourceUri, actions, {
       compress: 0.94,
       format: ImageManipulator.SaveFormat.JPEG,
       base64: true
     });
-    return { uri: cropped.uri, base64: cropped.base64 };
+    if (!cropped.base64) {
+      void debugLog('warn', 'photo', `crop base64 missing, reading file ${cropped.uri.split(':')[0]}`);
+    }
+    return { uri: cropped.uri, base64: await readBase64(cropped.uri, cropped.base64) };
   }
 
   const turned = await ImageManipulator.manipulateAsync(
-    photo.uri,
+    sourceUri,
     [{ crop }, { rotate: -rotation }],
     { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
   );
@@ -226,7 +251,26 @@ async function renderRoiCrop(
     format: ImageManipulator.SaveFormat.JPEG,
     base64: true
   });
-  return { uri: finalCrop.uri, base64: finalCrop.base64 };
+  if (!finalCrop.base64) {
+    void debugLog('warn', 'photo', `rotated crop base64 missing, reading file ${finalCrop.uri.split(':')[0]}`);
+  }
+  return { uri: finalCrop.uri, base64: await readBase64(finalCrop.uri, finalCrop.base64) };
+}
+
+export async function materializeRoi(photo: CapturedPhoto, roi: RoiBox): Promise<string> {
+  if (roi.base64 && roi.base64.length > 0) {
+    return readBase64(roi.croppedUri || photo.uri, roi.base64);
+  }
+  const cropped = await renderRoiCrop(photo, {
+    normX: roi.normX,
+    normY: roi.normY,
+    normW: roi.normW,
+    normH: roi.normH,
+    rotation: roi.rotation || 0
+  });
+  if (cropped?.base64) return cropped.base64;
+  if (roi.croppedUri) return readBase64(roi.croppedUri);
+  throw new Error('Could not read the cropped region.');
 }
 
 export const RoiSelector: React.FC<RoiSelectorProps> = ({
@@ -383,6 +427,7 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
       });
     } catch (err) {
       if (!stillCurrent()) return;
+      void debugError('photo', err, 'region update failed');
       Alert.alert(
         'Region update failed',
         err instanceof Error ? err.message : 'Could not recrop the region.'

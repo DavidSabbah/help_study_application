@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Text,
@@ -18,21 +18,94 @@ import {
   loadFiches,
   saveFiche
 } from '../study/fiches';
+import { FichePlace } from '../session/appSession';
 
 type Pane = 'list' | 'edit' | 'recall';
+
+interface FicheScreenProps {
+  initial?: FichePlace;
+  onPlace?: (place: FichePlace) => void;
+  backRef?: MutableRefObject<(() => boolean) | null>;
+}
 
 function clipDraft(value: string): string {
   return value.replace(/\r\n/g, '\n').split('\n').slice(0, FICHE_LINE_LIMIT).join('\n');
 }
 
-export const FicheScreen: React.FC = () => {
-  const [pane, setPane] = useState<Pane>('list');
+function formatWhen(ms: number): string {
+  const date = new Date(ms);
+  const day = date.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  });
+  const time = date.toLocaleTimeString('fr-FR', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  return `${day} · ${time}`;
+}
+
+function ficheDateLabel(fiche: Fiche): string {
+  const created = formatWhen(fiche.createdAt);
+  if (fiche.updatedAt - fiche.createdAt > 60_000) {
+    return `${created} · modifiée le ${formatWhen(fiche.updatedAt)}`;
+  }
+  return created;
+}
+
+type FicheOrder = 'recent' | 'ancien' | 'modifie' | 'az' | 'za';
+
+const ORDER_OPTIONS: { id: FicheOrder; label: string }[] = [
+  { id: 'recent', label: 'Récentes' },
+  { id: 'ancien', label: 'Anciennes' },
+  { id: 'modifie', label: 'Modifiées' },
+  { id: 'az', label: 'A → Z' },
+  { id: 'za', label: 'Z → A' }
+];
+
+function fold(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function matchesQuery(fiche: Fiche, query: string): boolean {
+  const needle = fold(query.trim());
+  if (!needle) return true;
+  return fold(fiche.text).includes(needle);
+}
+
+function sortFiches(list: Fiche[], order: FicheOrder): Fiche[] {
+  const next = [...list];
+  next.sort((a, b) => {
+    if (order === 'recent') return b.createdAt - a.createdAt || a.id.localeCompare(b.id);
+    if (order === 'ancien') return a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+    if (order === 'modifie') return b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
+    const cmp = ficheTitle(a.text).localeCompare(ficheTitle(b.text), 'fr', { sensitivity: 'base' });
+    return order === 'az' ? cmp || a.id.localeCompare(b.id) : -cmp || a.id.localeCompare(b.id);
+  });
+  return next;
+}
+
+export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, backRef }) => {
+  const boot = useRef(initial);
+  const [pane, setPane] = useState<Pane>(boot.current?.pane || 'list');
   const [fiches, setFiches] = useState<Fiche[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(boot.current?.editingId || null);
+  const [draft, setDraft] = useState(boot.current?.draft || '');
   const [status, setStatus] = useState('');
   const [deck, setDeck] = useState<Fiche[]>([]);
-  const [place, setPlace] = useState(0);
+  const [place, setPlace] = useState(boot.current?.place || 0);
+  const [booting, setBooting] = useState((boot.current?.pane || 'list') !== 'list');
+  const [query, setQuery] = useState('');
+  const [order, setOrder] = useState<FicheOrder>('recent');
+
+  const shown = useMemo(
+    () => sortFiches(fiches.filter((fiche) => matchesQuery(fiche, query)), order),
+    [fiches, query, order]
+  );
 
   const reload = useCallback(async () => {
     const next = await loadFiches();
@@ -41,8 +114,44 @@ export const FicheScreen: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    reload();
+    let cancel = false;
+    reload().then((list) => {
+      if (cancel) return;
+      const start = boot.current;
+      if (start?.pane === 'recall') {
+        const restored = start.deckIds
+          .map((id) => list.find((fiche) => fiche.id === id))
+          .filter((fiche): fiche is Fiche => Boolean(fiche));
+        setDeck(restored);
+        setPlace(Math.min(start.place, restored.length));
+      }
+      if (start?.pane === 'edit' && start.editingId) {
+        const fiche = list.find((item) => item.id === start.editingId);
+        if (fiche && !start.draft) setDraft(fiche.text);
+      }
+      setBooting(false);
+    });
+    return () => {
+      cancel = true;
+    };
   }, [reload]);
+
+  useEffect(() => {
+    if (booting) return;
+    onPlace?.({
+      pane,
+      editingId,
+      draft,
+      deckIds: deck.map((fiche) => fiche.id),
+      place
+    });
+  }, [booting, pane, editingId, draft, deck, place, onPlace]);
+
+  useEffect(() => {
+    return () => {
+      if (backRef) backRef.current = null;
+    };
+  }, [backRef]);
 
   const openNew = () => {
     setEditingId(null);
@@ -104,6 +213,18 @@ export const FicheScreen: React.FC = () => {
     setPlace(0);
     setPane('recall');
   };
+
+  if (backRef) {
+    backRef.current = () => {
+      if (pane === 'list') return false;
+      setPane('list');
+      return true;
+    };
+  }
+
+  if (booting) {
+    return <View style={styles.card} />;
+  }
 
   if (pane === 'recall') {
     const current = deck[place];
@@ -200,11 +321,53 @@ export const FicheScreen: React.FC = () => {
       </TouchableOpacity>
       {status.length > 0 && <Text style={styles.status}>{status}</Text>}
       {fiches.length === 0 && <Text style={styles.help}>Aucune fiche pour l'instant.</Text>}
-      {fiches.map((fiche) => {
+      {fiches.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.label}>Filtrer</Text>
+          <TextInput
+            style={styles.input}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Un mot du titre ou du texte"
+            placeholderTextColor="#64748b"
+            autoCorrect={false}
+          />
+          <Text style={styles.label}>Ordre</Text>
+          <View style={styles.orderRow}>
+            {ORDER_OPTIONS.map((option) => {
+              const active = option.id === order;
+              return (
+                <TouchableOpacity
+                  key={option.id}
+                  onPress={() => setOrder(option.id)}
+                  style={active ? styles.orderOn : styles.orderOff}
+                >
+                  <Text style={active ? styles.orderOnText : styles.orderOffText}>{option.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text style={styles.help}>
+            {query.trim().length > 0
+              ? `${shown.length} sur ${fiches.length}`
+              : `${shown.length} fiche${shown.length > 1 ? 's' : ''}`}
+          </Text>
+        </View>
+      )}
+      {fiches.length > 0 && shown.length === 0 && (
+        <Text style={styles.help}>Aucune fiche ne correspond à ce filtre.</Text>
+      )}
+      {shown.map((fiche) => {
         const preview = fichePreview(fiche.text);
         return (
-          <View key={fiche.id} style={styles.card}>
+          <TouchableOpacity
+            key={fiche.id}
+            style={styles.card}
+            onPress={() => openEdit(fiche)}
+            activeOpacity={0.85}
+          >
             <Text style={styles.title}>{ficheTitle(fiche.text)}</Text>
+            <Text style={styles.date}>{ficheDateLabel(fiche)}</Text>
             {preview.length > 0 && (
               <Text style={styles.help} numberOfLines={2}>
                 {preview}
@@ -218,7 +381,7 @@ export const FicheScreen: React.FC = () => {
                 <Text style={styles.smallText}>Supprimer</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </TouchableOpacity>
         );
       })}
     </View>
@@ -244,6 +407,11 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
     fontSize: 16,
     fontWeight: '700'
+  },
+  date: {
+    color: '#a5b4fc',
+    fontSize: 12,
+    fontWeight: '600'
   },
   idea: {
     color: '#f8fafc',
@@ -288,6 +456,35 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: 8
+  },
+  orderRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  orderOn: {
+    backgroundColor: '#4338ca',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  orderOff: {
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  orderOnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  orderOffText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '700'
   },
   primary: {
     backgroundColor: '#6366f1',

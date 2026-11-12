@@ -2,6 +2,7 @@ import React, { useRef, useImperativeHandle, forwardRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { OcrLanguageCode, RoiBox } from '../types';
+import { debugLog } from '../debug/debugLog';
 
 export interface PreprocessStats {
   rot90?: number;
@@ -1409,7 +1410,10 @@ const TESSERACT_WEBVIEW_HTML = `
   }
 
   async function runEnhanceJob(b64) {
-    if (isJobRunning) return;
+    if (isJobRunning) {
+      postToRN({ type: 'trace', level: 'warn', message: 'Page clean ignored because a job is already running' });
+      return;
+    }
     isJobRunning = true;
     try {
       postToRN({
@@ -1490,7 +1494,10 @@ const TESSERACT_WEBVIEW_HTML = `
   }
 
   async function runOcrJob(rois, langString, shouldPreprocess) {
-    if (isJobRunning) return;
+    if (isJobRunning) {
+      postToRN({ type: 'trace', level: 'warn', message: 'OCR ignored because a job is already running' });
+      return;
+    }
     isJobRunning = true;
 
     try {
@@ -1540,6 +1547,16 @@ const TESSERACT_WEBVIEW_HTML = `
         }
         var recognized = await recognizeBest(worker, imgBytes, langString, prefix, i, rois.length, measuredGap);
         var cleaned = recognized.text;
+        var st = statsList.length > i ? statsList[i] : null;
+        postToRN({
+          type: 'trace',
+          level: cleaned ? 'info' : 'warn',
+          message: 'roi ' + (i + 1) + '/' + rois.length
+            + ' bytes ' + imgBytes.length
+            + ' conf ' + Math.round(recognized.conf || 0)
+            + ' chars ' + (cleaned ? cleaned.length : 0)
+            + (st ? ' page ' + st.width + 'x' + st.height + ' rot ' + (st.rot90 || 0) + ' skew ' + st.skewAngle : ' no-preprocess')
+        });
         if (cleaned) {
           blocks.push(rois.length > 1 ? '--- Region ' + (i + 1) + ' ---\\n' + cleaned : cleaned);
         }
@@ -1660,6 +1677,10 @@ export const TesseractOcrBridge = forwardRef<
         onError('No cropped ROI image data found. Please draw a box on the photo.');
         return;
       }
+      if (!webviewRef.current) {
+        onError('OCR webview is not ready.');
+        return;
+      }
 
       const langString = langs.length > 0 ? langs.join('+') : 'fra+eng';
       const payload = JSON.stringify({
@@ -1668,9 +1689,14 @@ export const TesseractOcrBridge = forwardRef<
         lang: langString,
         preprocess
       });
+      void debugLog(
+        'info',
+        'ocr',
+        `send ${base64List.length} crops ${langString} preprocess ${preprocess ? 'on' : 'off'} chars ${base64List.reduce((sum, item) => sum + item.length, 0)}`
+      );
 
-      webviewRef.current?.injectJavaScript(
-        `if (window.runOcrJobFromRN) { window.runOcrJobFromRN(${payload}); } true;`
+      webviewRef.current.injectJavaScript(
+        `if (window.runOcrJobFromRN) { window.runOcrJobFromRN(${payload}); } else if (window.ReactNativeWebView) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', error: 'OCR worker is not ready yet' })); } true;`
       );
     },
     enhanceImage: (base64: string) => {
@@ -1727,6 +1753,8 @@ export const TesseractOcrBridge = forwardRef<
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'progress') {
         onProgress(data.status, data.percent);
+      } else if (data.type === 'trace') {
+        void debugLog(data.level === 'warn' || data.level === 'error' ? data.level : 'info', 'ocr', String(data.message || ''));
       } else if (data.type === 'complete') {
         onComplete(data.text || '', data.processedRois, data.stats);
       } else if (data.type === 'enhance_complete') {
@@ -1745,15 +1773,15 @@ export const TesseractOcrBridge = forwardRef<
       } else if (data.type === 'error') {
         onError(data.error || 'Unknown OCR error');
       }
-    } catch {
-      // Ignore malformed messages
+    } catch (err) {
+      void debugLog('error', 'ocr', 'bad message from the OCR worker');
     }
   };
 
   return (
     <View style={styles.hiddenContainer} pointerEvents="none">
       <WebView
-        key="tesseract-webview-v12"
+        key="tesseract-webview-v13"
         ref={webviewRef}
         originWhitelist={['*']}
         source={{ html: TESSERACT_WEBVIEW_HTML }}
@@ -1763,8 +1791,24 @@ export const TesseractOcrBridge = forwardRef<
         cacheMode="LOAD_CACHE_ELSE_NETWORK"
         mixedContentMode="always"
         allowFileAccess
+        onLoadStart={() => {
+          void debugLog('info', 'ocr', 'webview loading');
+        }}
+        onLoadEnd={() => {
+          void debugLog('info', 'ocr', 'webview loaded');
+        }}
         onMessage={handleMessage}
-        onError={(e) => onError(`WebView error: ${e.nativeEvent.description}`)}
+        onError={(e) => {
+          void debugLog('error', 'ocr', `webview ${e.nativeEvent.description}`);
+          onError(`WebView error: ${e.nativeEvent.description}`);
+        }}
+        onHttpError={(e) => {
+          void debugLog(
+            'error',
+            'ocr',
+            `webview http ${e.nativeEvent.statusCode} ${e.nativeEvent.description}`
+          );
+        }}
       />
     </View>
   );

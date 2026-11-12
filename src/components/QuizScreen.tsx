@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { MutableRefObject, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Text,
@@ -24,6 +24,7 @@ import {
   renameQuiz,
   setOpenQuiz
 } from '../study/quizzes';
+import { QuizPlace } from '../session/appSession';
 
 type Pane = 'list' | 'detail' | 'play';
 
@@ -31,6 +32,9 @@ interface QuizScreenProps {
   answerLanguage: string;
   linkTitle: string;
   resumeEdit: boolean;
+  initial?: QuizPlace;
+  onPlace?: (place: QuizPlace) => void;
+  backRef?: MutableRefObject<(() => boolean) | null>;
   onAsk: (prompt: string) => void;
 }
 
@@ -38,23 +42,28 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   answerLanguage,
   linkTitle,
   resumeEdit,
+  initial,
+  onPlace,
+  backRef,
   onAsk
 }) => {
-  const [pane, setPane] = useState<Pane>('list');
+  const boot = useRef(initial);
+  const [pane, setPane] = useState<Pane>(boot.current?.pane || 'list');
   const [quizzes, setQuizzes] = useState<StudyQuiz[]>([]);
   const [items, setItems] = useState<QuizItem[]>([]);
   const [title, setTitle] = useState('');
   const [editTitle, setEditTitle] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [playReturn, setPlayReturn] = useState<Pane>('list');
+  const [selectedId, setSelectedId] = useState<string | null>(boot.current?.quizId || null);
+  const [playReturn, setPlayReturn] = useState<Pane>(boot.current?.playReturn || 'list');
   const [reply, setReply] = useState('');
   const [manualKind, setManualKind] = useState<ItemKind>('question');
   const [manualPrompt, setManualPrompt] = useState('');
   const [manualAnswer, setManualAnswer] = useState('');
   const [status, setStatus] = useState('');
-  const [revealed, setRevealed] = useState(false);
+  const [revealed, setRevealed] = useState(Boolean(boot.current?.revealed));
   const [queue, setQueue] = useState<QuizItem[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
+  const [booting, setBooting] = useState((boot.current?.pane || 'list') !== 'list');
 
   const reload = useCallback(async () => {
     const data = await loadStudyData();
@@ -64,18 +73,87 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   }, []);
 
   useEffect(() => {
+    let cancel = false;
     reload().then((data) => {
-      if (!resumeEdit || !data.openQuizId) return;
-      const quiz = data.quizzes.find((item) => item.id === data.openQuizId);
-      if (!quiz) return;
-      setSelectedId(quiz.id);
-      setEditTitle(quiz.title);
-      setPane('detail');
+      if (cancel) return;
+      const start = boot.current;
+      const quizId = start?.quizId;
+      if ((start?.pane === 'detail' || start?.pane === 'play') && quizId) {
+        const quiz = data.quizzes.find((item) => item.id === quizId);
+        if (quiz) {
+          setSelectedId(quiz.id);
+          setEditTitle(quiz.title);
+          if (start.pane === 'play') {
+            const mine = data.items.filter((item) => item.quizId === quiz.id);
+            const byId = new Map(mine.map((item) => [item.id, item]));
+            const queued = start.queueIds
+              .map((id) => byId.get(id))
+              .filter((item): item is QuizItem => Boolean(item));
+            setQueue(queued.length > 0 ? queued : drawQuizQueue(mine));
+            setRevealed(start.revealed);
+            setPlayReturn(start.playReturn);
+            setPane('play');
+          } else {
+            setPane('detail');
+          }
+          setBooting(false);
+          return;
+        }
+      }
+      if (resumeEdit && data.openQuizId) {
+        const quiz = data.quizzes.find((item) => item.id === data.openQuizId);
+        if (quiz) {
+          setSelectedId(quiz.id);
+          setEditTitle(quiz.title);
+          setPane('detail');
+        }
+      }
+      setBooting(false);
     });
+    return () => {
+      cancel = true;
+    };
   }, [reload, resumeEdit]);
+
+  useEffect(() => {
+    if (booting) return;
+    onPlace?.({
+      pane: pane === 'detail' || pane === 'play' ? pane : 'list',
+      quizId: selectedId,
+      queueIds: queue.map((item) => item.id),
+      revealed,
+      playReturn: playReturn === 'detail' ? 'detail' : 'list'
+    });
+  }, [booting, pane, selectedId, queue, revealed, playReturn, onPlace]);
+
+  useEffect(() => {
+    return () => {
+      if (backRef) backRef.current = null;
+    };
+  }, [backRef]);
 
   const selected = quizzes.find((quiz) => quiz.id === selectedId) || null;
   const selectedItems = items.filter((item) => item.quizId === selectedId);
+
+  if (backRef) {
+    backRef.current = () => {
+      if (pane === 'play') {
+        setPane(playReturn === 'detail' ? 'detail' : 'list');
+        return true;
+      }
+      if (pane === 'detail') {
+        setStatus('');
+        setPane('list');
+        void setOpenQuiz(null);
+        return true;
+      }
+      return false;
+    };
+  }
+
+  if (booting) {
+    return <View style={styles.card} />;
+  }
 
   const openModify = (quiz: StudyQuiz) => {
     setSelectedId(quiz.id);
