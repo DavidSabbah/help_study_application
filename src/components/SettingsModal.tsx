@@ -13,7 +13,7 @@ import { LlmLink } from '../types';
 import { DEFAULT_LLM_LINKS } from '../storage/settingsStorage';
 import { readDebugLog } from '../debug/debugLog';
 import { useI18n } from '../i18n/I18n';
-import { APP_LANGUAGES, AppLanguage, languageOption } from '../i18n/languages';
+import { APP_LANGUAGES, languageOption } from '../i18n/languages';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -129,7 +129,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   return (
                     <TouchableOpacity
                       key={item.code}
-                      onPress={() => setAppLanguage(item.code as AppLanguage)}
+                      onPress={() => {
+                        if (followsPhone && item.code === lang) return;
+                        setAppLanguage(item.code);
+                      }}
                       style={[styles.langChip, active && styles.langChipOn]}
                     >
                       <Text style={[styles.langChipText, active && styles.langChipTextOn]}>
@@ -363,32 +366,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
     marginBottom: 8
-  },
-  langWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 12
-  },
-  langChip: {
-    backgroundColor: '#1e293b',
-    borderWidth: 1,
-    borderColor: '#334155',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999
-  },
-  langChipOn: {
-    backgroundColor: 'rgba(99, 102, 241, 0.28)',
-    borderColor: '#6366f1'
-  },
-  langChipText: {
-    color: '#94a3b8',
-    fontSize: 12,
-    fontWeight: '700'
-  },
-  langChipTextOn: {
-    color: '#e0e7ff'
   },
   optionRow: {
     flexDirection: 'row',

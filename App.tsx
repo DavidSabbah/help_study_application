@@ -81,6 +81,8 @@ import {
   pageWordQuizInstruction
 } from './src/study/quizzes';
 import { loadFiches } from './src/study/fiches';
+import { useI18n } from './src/i18n/I18n';
+import { MessageKey } from './src/i18n/catalog';
 import {
   AppSession,
   FichePlace,
@@ -145,6 +147,7 @@ async function ensureGalleryFile(uri: string): Promise<string> {
 }
 
 export default function App() {
+  const { t, direction } = useI18n();
   const [photo, setPhoto] = useState<CapturedPhoto | null>(null);
   const [originalPhoto, setOriginalPhoto] = useState<CapturedPhoto | null>(null);
   const [isPhotoCleaned, setIsPhotoCleaned] = useState<boolean>(false);
@@ -364,10 +367,7 @@ export default function App() {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) {
         await debugLog('warn', 'photo', 'camera permission denied');
-        Alert.alert(
-          'Camera Permission Required',
-          'Please allow camera access to take pictures of your study pages.'
-        );
+        Alert.alert(t('photo.cameraPermissionTitle'), t('photo.cameraPermissionBody'));
         return;
       }
 
@@ -390,10 +390,7 @@ export default function App() {
       }
     } catch (err) {
       await debugError('photo', err, 'camera failed');
-      Alert.alert(
-        'Camera Error',
-        err instanceof Error ? err.message : String(err)
-      );
+      Alert.alert(t('photo.cameraError'), err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -424,10 +421,7 @@ export default function App() {
       }
     } catch (err) {
       await debugError('photo', err, 'gallery failed');
-      Alert.alert(
-        'Gallery Error',
-        err instanceof Error ? err.message : String(err)
-      );
+      Alert.alert(t('photo.galleryError'), err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -447,10 +441,7 @@ export default function App() {
       );
     } catch (err) {
       await debugError('photo', err, 'sample failed');
-      Alert.alert(
-        'Could not load sample image',
-        err instanceof Error ? err.message : String(err)
-      );
+      Alert.alert(t('photo.sampleError'), err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -472,10 +463,7 @@ export default function App() {
       );
     } catch (err) {
       await debugError('photo', err, 'book page failed');
-      Alert.alert(
-        'Could not load real book image',
-        err instanceof Error ? err.message : String(err)
-      );
+      Alert.alert(t('photo.bookError'), err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -503,8 +491,8 @@ export default function App() {
     } catch (err) {
       await debugError('photo', err, 'rotate failed');
       Alert.alert(
-        'Rotate Failed',
-        err instanceof Error ? err.message : 'Could not rotate image.'
+        t('photo.rotateError'),
+        err instanceof Error ? err.message : t('photo.rotateErrorBody')
       );
     }
   };
@@ -518,15 +506,12 @@ export default function App() {
       const perm = await MediaLibrary.requestPermissionsAsync(true);
       if (!perm.granted) {
         await debugLog('warn', 'photo', 'gallery save permission denied');
-        Alert.alert(
-          'Gallery permission',
-          'Allow StudyLens to save images so you can inspect them in your gallery.'
-        );
+        Alert.alert(t('photo.galleryPermissionTitle'), t('photo.galleryPermissionBody'));
         return;
       }
       const fileUri = await ensureGalleryFile(source);
       await MediaLibrary.saveToLibraryAsync(fileUri);
-      setOcrStatus('💾 Image saved to your gallery.');
+      setOcrStatus(t('photo.savedGallery'));
     } catch (err) {
       await debugError('photo', err, 'gallery save failed');
       const message = err instanceof Error ? err.message : String(err);
@@ -534,10 +519,8 @@ export default function App() {
         message
       );
       Alert.alert(
-        'Save failed',
-        needsRebuild
-          ? 'Gallery save needs a new Android build. Rebuild the app, then try again.'
-          : message
+        t('photo.saveFailed'),
+        needsRebuild ? t('photo.saveNeedsRebuild') : message
       );
     } finally {
       setSavingImage(false);
@@ -551,16 +534,14 @@ export default function App() {
       setIsPhotoCleaned(false);
       setRois([]);
       setProcessedPreviews([]);
-      setOcrStatus('↩ Restored original camera photo.');
+      setOcrStatus(t('photo.restored'));
       return;
     }
 
     try {
       await debugLog('info', 'photo', `clean ${photo.width}x${photo.height}`);
       setEnhancingPhoto(true);
-      setOcrStatus(
-        '✨ Cleaning book page (lifting shadows, fixing contrast, straightening the page)...'
-      );
+      setOcrStatus(t('photo.cleaning'));
       const actions: ImageManipulator.Action[] =
         photo.width > 2000 ? [{ resize: { width: 2000 } }] : [];
       const sourceUri = await ensureManipulableUri(photo.uri);
@@ -576,10 +557,7 @@ export default function App() {
     } catch (err) {
       await debugError('photo', err, 'clean failed');
       setEnhancingPhoto(false);
-      Alert.alert(
-        'Book Clean Failed',
-        err instanceof Error ? err.message : String(err)
-      );
+      Alert.alert(t('photo.cleanFailed'), err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -609,10 +587,7 @@ export default function App() {
       ]);
     } catch (err) {
       await debugError('photo', err, 'full page crop failed');
-      Alert.alert(
-        'Full Page Selection Error',
-        err instanceof Error ? err.message : String(err)
-      );
+      Alert.alert(t('photo.fullError'), err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -632,8 +607,8 @@ export default function App() {
     const shouldPreprocess = preprocessEnabled && !isPhotoCleaned;
     setOcrStatus(
       shouldPreprocess
-        ? `Cleaning the page for OCR (${selectedLangs.join('+')})...`
-        : `Starting local OCR (${selectedLangs.join('+')})...`
+        ? t('photo.ocrCleaning', { langs: selectedLangs.join('+') })
+        : t('photo.ocrStarting', { langs: selectedLangs.join('+') })
     );
     try {
       const images = await Promise.all(rois.map((roi) => materializeRoi(photo, roi)));
@@ -644,8 +619,8 @@ export default function App() {
       setOcrRunning(false);
       await debugError('ocr', err, 'could not read the cropped region');
       Alert.alert(
-        'OCR',
-        err instanceof Error ? err.message : 'Could not read the cropped region.'
+        t('photo.ocrTitle'),
+        err instanceof Error ? err.message : t('photo.ocrReadFailed')
       );
     }
   };
@@ -888,20 +863,20 @@ export default function App() {
       const images = await loadRoiImages(rois);
       if (images.length === 0) {
         await debugLog('warn', 'prompt', 'execute without a crop');
-        Alert.alert('No crop', 'Draw a region on the photo, or tap Full.');
+        Alert.alert(t('photo.noCropTitle'), t('photo.noCropBody'));
         return;
       }
       const paste = await copyImageThenText(images, prompt, (list) => {
         const bridge = ocrBridgeRef.current;
-        if (!bridge) return Promise.reject(new Error('The page image is not ready.'));
+        if (!bridge) return Promise.reject(new Error(t('prompt.imageNotReady')));
         return bridge.stitchImages(list);
       });
       openBrowser(selectedLink.url, selectedLink.title, 'prompt', true, paste);
     } catch (err) {
       await debugError('prompt', err, 'copy image and prompt failed');
       Alert.alert(
-        'Copy failed',
-        err instanceof Error ? err.message : 'Could not copy the cropped page.'
+        t('prompt.copyFailed'),
+        err instanceof Error ? err.message : t('prompt.copyFailedBody')
       );
     }
   };
@@ -929,7 +904,7 @@ export default function App() {
 
   if (!hydrated) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { direction }]}>
         <StatusBar style="light" />
       </SafeAreaView>
     );
@@ -937,7 +912,7 @@ export default function App() {
 
   return (
     <AppCrashBoundary>
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { direction }]}>
       <StatusBar style="light" />
 
       {/* Hidden Tesseract.js OCR WebView Worker */}
@@ -964,21 +939,14 @@ export default function App() {
             setPreprocessStats(stats);
           }
           const rotNote =
-            stats && stats.length > 0 && stats[0].rot90
-              ? ` • Rotated ${stats[0].rot90}°`
-              : '';
+            stats && stats.length > 0 && stats[0].rot90 ? ` • ${stats[0].rot90}°` : '';
           const statNote =
             stats && stats.length > 0
-              ? `${rotNote} • Deskew ${stats[0].skewAngle >= 0 ? '+' : ''}${stats[0].skewAngle}° • Curve flat ${stats[0].curveShiftPx}px`
+              ? `${rotNote} • ${stats[0].skewAngle >= 0 ? '+' : ''}${stats[0].skewAngle}° • ${stats[0].curveShiftPx}px`
               : '';
-          setOcrStatus(
-            `✅ Local OCR complete (${selectedLangs.join('+')})${statNote}`
-          );
+          setOcrStatus(t('photo.ocrDone', { langs: selectedLangs.join('+'), note: statNote }));
           setPageSource('ocr');
-          setOcrText(
-            text ||
-            '(No text detected — go back to the photo and draw a tighter region, or type the text here.)'
-          );
+          setOcrText(text || t('photo.noText'));
           showPhase('prompt');
         }}
         onEnhanceComplete={async (base64, stats) => {
@@ -997,10 +965,8 @@ export default function App() {
             setIsPhotoCleaned(true);
             setRois([]);
             setProcessedPreviews([]);
-            const rotPart = stats.rot90 ? `Auto-rotated ${stats.rot90}° • ` : '';
-            setOcrStatus(
-              `✨ Book page cleaned: ${rotPart}Shadows removed • Deskewed ${stats.skewAngle >= 0 ? '+' : ''}${stats.skewAngle}° • Line curve flattened ${stats.curveShiftPx}px`
-            );
+            const detail = `${stats.rot90 ? `${stats.rot90}° • ` : ''}${stats.skewAngle >= 0 ? '+' : ''}${stats.skewAngle}° • ${stats.curveShiftPx}px`;
+            setOcrStatus(t('photo.cleaned', { detail }));
             void debugLog(
               'info',
               'ocr',
@@ -1009,7 +975,9 @@ export default function App() {
           } catch (err) {
             await debugError('photo', err, 'save cleaned page failed');
             setOcrStatus(
-              `❌ Could not save cleaned page: ${err instanceof Error ? err.message : String(err)}`
+              t('photo.cleanSaveFailed', {
+                message: err instanceof Error ? err.message : String(err)
+              })
             );
           } finally {
             setEnhancingPhoto(false);
@@ -1019,7 +987,7 @@ export default function App() {
           void debugLog('error', 'ocr', err);
           setOcrRunning(false);
           setEnhancingPhoto(false);
-          setOcrStatus(`❌ OCR Error: ${err}`);
+          setOcrStatus(t('photo.ocrError', { message: err }));
         }}
       />
 
@@ -1043,13 +1011,13 @@ export default function App() {
             style={styles.brandHit}
             activeOpacity={0.7}
             accessibilityRole="button"
-            accessibilityLabel="StudyLens home"
+            accessibilityLabel={t('home.brand')}
           >
             <Text style={styles.brandEmoji}>📖</Text>
             <View>
               <Text style={styles.brandTitle}>StudyLens</Text>
               <Text style={styles.brandSubtitle}>
-                Scanner • Quiz
+                {t('home.brand')}
               </Text>
             </View>
           </TouchableOpacity>
@@ -1076,10 +1044,10 @@ export default function App() {
             <View style={styles.browserHintWrap}>
               <Text style={styles.browserHint}>
                 {browser.paste === 'together'
-                  ? 'Image and prompt copied. Paste once: the image comes first, then the text. If only the image lands, tap Copy prompt only and paste the text under it.'
+                  ? t('prompt.together')
                   : browser.paste === 'image-first'
-                    ? 'Image copied. Paste it, then tap Copy prompt and paste the text under the image.'
-                    : 'Prompt copied. Paste it into the page, then copy the answer and add it to a quiz.'}
+                    ? t('prompt.imageFirst')
+                    : t('prompt.textCopied')}
               </Text>
               {browser.paste !== 'text' && (
                 <TouchableOpacity
@@ -1088,10 +1056,10 @@ export default function App() {
                 >
                   <Text style={styles.copyPromptBtnText}>
                     {promptFlash
-                      ? 'Prompt copied'
+                      ? t('prompt.copied')
                       : browser.paste === 'together'
-                        ? 'Copy prompt only'
-                        : 'Copy prompt'}
+                        ? t('prompt.copyPromptOnly')
+                        : t('prompt.copyPrompt')}
                   </Text>
                 </TouchableOpacity>
               )}
@@ -1125,30 +1093,27 @@ export default function App() {
             items={[
               {
                 key: 'scan',
-                title: 'Scanner une page',
-                detail:
-                  'Photo, explication, exercice, résumé, ou les mots importants de la page.',
+                title: t('home.scanTitle'),
+                detail: t('home.scanDetail'),
                 onPress: () => showPhase('capture')
               },
               {
                 key: 'quiz',
-                title: 'Quiz',
-                detail:
-                  'Plusieurs quiz. Modifie chacun pour y ajouter des questions, une par une ou en collant une réponse.',
+                title: t('home.quizTitle'),
+                detail: t('home.quizDetail'),
                 meta:
                   wordCount === 0
-                    ? 'vide'
+                    ? t('home.quizEmpty')
                     : dueCount === 0
-                      ? 'révision'
-                      : `${dueCount} à revoir`,
+                      ? t('home.quizReview')
+                      : t('home.quizDue', { n: dueCount }),
                 onPress: () => showPhase('quiz')
               },
               {
                 key: 'fiches',
-                title: 'Fiches',
-                detail:
-                  "Une idée en quelques lignes. Tu peux toutes les revoir, les modifier, ou en tirer au sort.",
-                meta: ficheCount === 0 ? 'vide' : `${ficheCount}`,
+                title: t('home.fichesTitle'),
+                detail: t('home.fichesDetail'),
+                meta: ficheCount === 0 ? t('home.fichesEmpty') : `${ficheCount}`,
                 onPress: () => showPhase('fiches')
               }
             ]}
@@ -1178,7 +1143,7 @@ export default function App() {
         {phase === 'capture' && (
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>Photo</Text>
+            <Text style={styles.cardTitle}>{t('photo.title')}</Text>
             <View style={styles.headerActions}>
               <TouchableOpacity
                 onPress={() => setSettingsVisible(true)}
@@ -1193,7 +1158,7 @@ export default function App() {
                     preprocessEnabled ? styles.cleanOnText : styles.cleanOffText
                   ]}
                 >
-                  {preprocessEnabled ? 'Clean ON' : 'Clean OFF'}
+                  {preprocessEnabled ? t('photo.cleanOn') : t('photo.cleanOff')}
                 </Text>
               </TouchableOpacity>
               {photo && (
@@ -1201,7 +1166,7 @@ export default function App() {
                   onPress={() => resetPhotoState(null)}
                   style={styles.smallHeaderBtn}
                 >
-                  <Text style={styles.smallHeaderBtnText}>New</Text>
+                  <Text style={styles.smallHeaderBtnText}>{t('photo.new')}</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -1215,7 +1180,7 @@ export default function App() {
                   style={styles.captureBtnPrimary}
                 >
                   <Text style={styles.captureEmoji}>📷</Text>
-                  <Text style={styles.captureBtnLabel}>Take Picture</Text>
+                  <Text style={styles.captureBtnLabel}>{t('photo.take')}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -1223,7 +1188,7 @@ export default function App() {
                   style={styles.captureBtnSecondary}
                 >
                   <Text style={styles.captureEmoji}>🖼️</Text>
-                  <Text style={styles.captureBtnLabel}>From Gallery</Text>
+                  <Text style={styles.captureBtnLabel}>{t('photo.gallery')}</Text>
                 </TouchableOpacity>
               </View>
 
@@ -1232,20 +1197,20 @@ export default function App() {
                   onPress={() => handleLoadRealBookPage(1)}
                   style={styles.sampleChip}
                 >
-                  <Text style={styles.sampleChipText}>Book 1</Text>
+                  <Text style={styles.sampleChipText}>{t('photo.book1')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => handleLoadRealBookPage(2)}
                   style={styles.sampleChip}
                 >
-                  <Text style={styles.sampleChipText}>Book 2</Text>
+                  <Text style={styles.sampleChipText}>{t('photo.book2')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handleLoadSamplePage}
                   style={[styles.sampleChip, styles.sampleChipMuted]}
                 >
                   <Text style={[styles.sampleChipText, styles.sampleChipMutedText]}>
-                    Sample
+                    {t('photo.sample')}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1271,26 +1236,26 @@ export default function App() {
                   style={[styles.toolBtn, savingImage && styles.btnDisabled]}
                 >
                   <Text style={styles.toolBtnText}>
-                    {savingImage ? '…' : 'Save'}
+                    {savingImage ? '…' : t('photo.save')}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handleSelectFullPage}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>Full</Text>
+                  <Text style={styles.toolBtnText}>{t('photo.full')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => setRois((prev) => prev.slice(0, -1))}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>Undo</Text>
+                  <Text style={styles.toolBtnText}>{t('photo.undo')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => setRois([])}
                   style={styles.toolBtn}
                 >
-                  <Text style={styles.toolBtnText}>Clear</Text>
+                  <Text style={styles.toolBtnText}>{t('photo.clear')}</Text>
                 </TouchableOpacity>
               </View>
 
@@ -1343,8 +1308,8 @@ export default function App() {
               >
                 <Text style={styles.primaryActionBtnText}>
                   {ocrRunning
-                    ? `⏳ Running OCR (${ocrPercent}%)...`
-                    : `🔍 Run Local OCR (${selectedLangs.join('+')}) on ${rois.length} ROI(s)`}
+                    ? t('photo.runBusy', { percent: ocrPercent })
+                    : t('photo.run', { langs: selectedLangs.join('+'), n: rois.length })}
                 </Text>
               </TouchableOpacity>
 
@@ -1362,10 +1327,10 @@ export default function App() {
                     styles.btnDisabled
                 ]}
               >
-                <Text style={styles.secondaryActionBtnText}>Next without OCR</Text>
+                <Text style={styles.secondaryActionBtnText}>{t('photo.nextWithout')}</Text>
               </TouchableOpacity>
               <Text style={styles.actionNote}>
-                OCR writes the page as text, for NotebookLM. Next keeps the crop: the image is pasted first, then the prompt, and the model reads the page, including pictures.
+                {t('photo.nextNote')}
               </Text>
 
               {ocrText.length > 0 && !ocrRunning && (
@@ -1373,7 +1338,7 @@ export default function App() {
                   onPress={() => showPhase('prompt')}
                   style={styles.openPromptBtn}
                 >
-                  <Text style={styles.openPromptText}>Open prompt</Text>
+                  <Text style={styles.openPromptText}>{t('photo.openPrompt')}</Text>
                 </TouchableOpacity>
               )}
 
@@ -1386,7 +1351,7 @@ export default function App() {
               {processedPreviews.length > 0 && (
                 <View style={styles.previewBox}>
                   <Text style={styles.previewBoxTitle}>
-                    Preprocessed page sent to OCR. Tap a page to open it large and zoom.
+                    {t('photo.previewTitle')}
                   </Text>
                   {processedPreviews.map((dataUrl, idx) => {
                     const st = preprocessStats[idx];
@@ -1429,26 +1394,26 @@ export default function App() {
         {phase === 'prompt' && (
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardTitle}>Prompt</Text>
+              <Text style={styles.cardTitle}>{t('prompt.title')}</Text>
               <TouchableOpacity
                 onPress={handleSharePrompt}
                 style={styles.shareBtn}
-                accessibilityLabel="Share"
+                accessibilityLabel={t('prompt.share')}
               >
                 <Ionicons name="share-social-outline" size={18} color="#f8fafc" />
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.fieldLabel}>Task</Text>
+            <Text style={styles.fieldLabel}>{t('prompt.task')}</Text>
             <ComboBox
               value={selectedTask}
               options={[
                 ...STUDY_TASKS.map((task) => ({
                   id: task.key,
-                  label: task.label
+                  label: t(`task.${task.key}` as MessageKey)
                 })),
-                { id: 'quiz_words', label: 'Quiz words' },
-                { id: 'quiz_questions', label: 'Quiz questions' }
+                { id: 'quiz_words', label: t('prompt.quizWords') },
+                { id: 'quiz_questions', label: t('prompt.quizQuestions') }
               ]}
               onChange={handleChooseTask}
             />
@@ -1459,7 +1424,7 @@ export default function App() {
                 answerDirection === 'rtl' && styles.inputRtl
               ]}
               multiline
-              placeholder="Write the task"
+              placeholder={t('prompt.writeTask')}
               placeholderTextColor="#64748b"
               value={taskText}
               onChangeText={(value) => {
@@ -1468,7 +1433,7 @@ export default function App() {
               }}
               textAlign={answerDirection === 'rtl' ? 'right' : 'left'}
             />
-            <Text style={styles.fieldLabel}>Answer in</Text>
+            <Text style={styles.fieldLabel}>{t('prompt.answerIn')}</Text>
             <View style={styles.flagRow}>
               {AVAILABLE_OCR_LANGUAGES.map((lang) => {
                 const active = lang.code === responseLang;
@@ -1486,7 +1451,7 @@ export default function App() {
 
             {pageSource === 'image' && (
               <View>
-                <Text style={styles.fieldLabel}>Cropped page</Text>
+                <Text style={styles.fieldLabel}>{t('prompt.croppedPage')}</Text>
                 <Text style={styles.actionNote}>{imagePageNote(responseLang)}</Text>
                 {rois.map((roi, idx) => {
                   const uri = roiSourceUri(roi);
@@ -1496,12 +1461,12 @@ export default function App() {
                       key={roi.id}
                       onPress={() =>
                         openZoom(
-                          `Crop ${idx + 1}`,
+                          t('photo.crop', { n: idx + 1 }),
                           rois
                             .map((item, itemIdx) => {
                               const slide = roiSourceUri(item);
                               return slide
-                                ? { label: `Crop ${itemIdx + 1}`, uri: slide }
+                                ? { label: t('photo.crop', { n: itemIdx + 1 }), uri: slide }
                                 : null;
                             })
                             .filter((slide): slide is ZoomSlide => slide !== null),
@@ -1521,13 +1486,13 @@ export default function App() {
                 })}
                 {linkNeedsOcr(selectedLink) && (
                   <Text style={styles.warnNote}>
-                    NotebookLM cannot take an image. Go back and run OCR to send this page there.
+                    {t('prompt.notebookWarn')}
                   </Text>
                 )}
               </View>
             )}
 
-            <Text style={styles.fieldLabel}>Open in</Text>
+            <Text style={styles.fieldLabel}>{t('prompt.openIn')}</Text>
             <ComboBox
               value={selectedLink?.id || ''}
               options={links.map((link) => ({
@@ -1535,7 +1500,7 @@ export default function App() {
                 label: `${link.icon} ${link.title}`
               }))}
               onChange={setSelectedLinkId}
-              placeholder="Choose a page"
+              placeholder={t('prompt.choosePage')}
             />
 
             <TouchableOpacity
@@ -1543,11 +1508,11 @@ export default function App() {
               disabled={!selectedLink}
               style={[styles.successActionBtn, !selectedLink && styles.btnDisabled]}
             >
-              <Text style={styles.primaryActionBtnText}>Execute</Text>
+              <Text style={styles.primaryActionBtnText}>{t('prompt.execute')}</Text>
             </TouchableOpacity>
 
             <Text style={styles.fieldLabel}>
-              {pageSource === 'image' ? 'Extra text' : 'Extracted text'}
+              {pageSource === 'image' ? t('prompt.extraText') : t('prompt.extractedText')}
             </Text>
             <TextInput
               style={[
@@ -1558,9 +1523,7 @@ export default function App() {
               ]}
               multiline
               placeholder={
-                pageSource === 'image'
-                  ? 'Optional. The page itself is the image.'
-                  : 'Text from the page'
+                pageSource === 'image' ? t('prompt.optionalImage') : t('prompt.textFromPage')
               }
               placeholderTextColor="#64748b"
               value={ocrText}

@@ -13,6 +13,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { CapturedPhoto, RoiBox } from '../types';
 import { debugError, debugLog } from '../debug/debugLog';
+import { useI18n } from '../i18n/I18n';
 
 interface RoiSelectorProps {
   photo: CapturedPhoto;
@@ -284,6 +285,7 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
   cleanBusy = false,
   cleaned = false
 }) => {
+  const { t } = useI18n();
   const [containerWidth, setContainerWidth] = useState<number>(320);
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
   const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
@@ -429,8 +431,8 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
       if (!stillCurrent()) return;
       void debugError('photo', err, 'region update failed');
       Alert.alert(
-        'Region update failed',
-        err instanceof Error ? err.message : 'Could not recrop the region.'
+        t('photo.regionFailed'),
+        err instanceof Error ? err.message : t('photo.regionFailedBody')
       );
     } finally {
       if (stillCurrent()) onDrawingChangeRef.current?.(false);
@@ -806,7 +808,7 @@ export const RoiSelector: React.FC<RoiSelectorProps> = ({
             style={[styles.cleanBtn, cleaned && styles.cleanBtnRevert, cleanBusy && styles.cleanBtnBusy]}
           >
             <Text style={styles.cleanBtnText}>
-              {cleanBusy ? '…' : cleaned ? 'Original' : 'Clean'}
+              {cleanBusy ? '…' : cleaned ? t('photo.original') : t('photo.clean')}
             </Text>
           </TouchableOpacity>
         )}

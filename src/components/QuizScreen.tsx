@@ -341,21 +341,23 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
             setOpenQuiz(null);
           }}
         >
-          <Text style={styles.link}>Tous les quiz</Text>
+          <Text style={styles.link}>{t('quiz.all')}</Text>
         </TouchableOpacity>
-        <Text style={styles.label}>Nom du quiz</Text>
+        <Text style={styles.label}>{t('quiz.name')}</Text>
         <TextInput
           style={styles.input}
           value={editTitle}
           onChangeText={setEditTitle}
-          placeholder="Nom du quiz"
+          placeholder={t('quiz.namePlaceholder')}
           placeholderTextColor="#64748b"
         />
         <TouchableOpacity onPress={saveName} style={styles.secondary}>
-          <Text style={styles.secondaryText}>Enregistrer le nom</Text>
+          <Text style={styles.secondaryText}>{t('quiz.saveName')}</Text>
         </TouchableOpacity>
         <Text style={styles.help}>
-          {selectedItems.length} question{selectedItems.length > 1 ? 's' : ''}
+          {t(selectedItems.length > 1 ? 'quiz.questionsMany' : 'quiz.questionsOne', {
+            n: selectedItems.length
+          })}
         </Text>
         <TouchableOpacity
           onPress={() => selectedId && startPlay(selectedId, 'detail')}
@@ -363,11 +365,11 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
           disabled={selectedItems.length === 0}
         >
           <Text style={styles.primaryText}>
-            {selectedItems.length > 0 ? 'Commencer' : 'Ajoute des questions'}
+            {selectedItems.length > 0 ? t('quiz.start') : t('quiz.needQuestions')}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={askMore} style={styles.secondary}>
-          <Text style={styles.secondaryText}>Demander de nouveaux éléments</Text>
+          <Text style={styles.secondaryText}>{t('quiz.askMore')}</Text>
         </TouchableOpacity>
         <QuestionPager
           items={selectedItems}
@@ -375,39 +377,39 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
           onIndex={setQuestionIndex}
           onDelete={(id) => removeItem(id)}
         />
-        <Text style={styles.label}>Ajouter une question</Text>
+        <Text style={styles.label}>{t('quiz.addQuestion')}</Text>
         <View style={styles.row}>
           <TouchableOpacity
             onPress={() => setManualKind('word')}
             style={[styles.secondaryCompact, manualKind === 'word' && styles.kindOn]}
           >
-            <Text style={styles.secondaryText}>Mot</Text>
+            <Text style={styles.secondaryText}>{t('quiz.word')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setManualKind('question')}
             style={[styles.secondaryCompact, manualKind === 'question' && styles.kindOn]}
           >
-            <Text style={styles.secondaryText}>Question</Text>
+            <Text style={styles.secondaryText}>{t('quiz.question')}</Text>
           </TouchableOpacity>
         </View>
         <TextInput
           style={styles.input}
           value={manualPrompt}
           onChangeText={setManualPrompt}
-          placeholder={manualKind === 'word' ? 'Le mot' : 'La question'}
+          placeholder={manualKind === 'word' ? t('quiz.wordPlaceholder') : t('quiz.questionPlaceholder')}
           placeholderTextColor="#64748b"
         />
         <TextInput
           style={styles.input}
           value={manualAnswer}
           onChangeText={setManualAnswer}
-          placeholder={manualKind === 'word' ? 'Le sens' : 'La réponse'}
+          placeholder={manualKind === 'word' ? t('quiz.sensePlaceholder') : t('quiz.answerPlaceholder')}
           placeholderTextColor="#64748b"
         />
         <TouchableOpacity onPress={saveManual} style={styles.secondary}>
-          <Text style={styles.secondaryText}>Ajouter cette question</Text>
+          <Text style={styles.secondaryText}>{t('quiz.addThis')}</Text>
         </TouchableOpacity>
-        <Text style={styles.label}>Coller la réponse du modèle</Text>
+        <Text style={styles.label}>{t('quiz.pasteLabel')}</Text>
         <TextInput
           style={[styles.input, styles.reply]}
           multiline
@@ -419,10 +421,10 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
         />
         <View style={styles.row}>
           <TouchableOpacity onPress={pasteReply} style={styles.secondaryCompact}>
-            <Text style={styles.secondaryText}>Coller</Text>
+            <Text style={styles.secondaryText}>{t('quiz.paste')}</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={saveReply} style={styles.primaryFlex}>
-            <Text style={styles.primaryText}>Ajouter au quiz</Text>
+            <Text style={styles.primaryText}>{t('quiz.addToQuiz')}</Text>
           </TouchableOpacity>
         </View>
         {status.length > 0 && <Text style={styles.status}>{status}</Text>}
@@ -432,26 +434,22 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.help}>
-        Tu peux en garder autant que tu veux. Modifier un quiz sert à y ajouter des questions, une par une, ou à coller la réponse d'un modèle.
-      </Text>
+      <Text style={styles.help}>{t('quiz.intro')}</Text>
       <View style={styles.card}>
-        <Text style={styles.label}>Ajouter un quiz</Text>
+        <Text style={styles.label}>{t('quiz.addLabel')}</Text>
         <TextInput
           style={styles.input}
           value={title}
           onChangeText={setTitle}
-          placeholder="Araméen, Chinois, Levinas..."
+          placeholder={t('quiz.addPlaceholder')}
           placeholderTextColor="#64748b"
         />
         <TouchableOpacity onPress={makeQuiz} style={styles.primary}>
-          <Text style={styles.primaryText}>Ajouter</Text>
+          <Text style={styles.primaryText}>{t('quiz.add')}</Text>
         </TouchableOpacity>
         {status.length > 0 && <Text style={styles.status}>{status}</Text>}
       </View>
-      {quizzes.length === 0 && (
-        <Text style={styles.help}>Aucun quiz pour l'instant.</Text>
-      )}
+      {quizzes.length === 0 && <Text style={styles.help}>{t('quiz.none')}</Text>}
       {quizzes.map((quiz) => {
         const mine = items.filter((item) => item.quizId === quiz.id);
         return (
@@ -459,16 +457,16 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
             <View style={styles.quizHead}>
               <View style={styles.frontActions}>
                 <TouchableOpacity onPress={() => openModify(quiz)} style={styles.modifyBtn}>
-                  <Text style={styles.frontText}>Modifier</Text>
+                  <Text style={styles.frontText}>{t('quiz.modify')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => confirmRemove(quiz)} style={styles.removeBtn}>
-                  <Text style={styles.frontText}>Supprimer</Text>
+                  <Text style={styles.frontText}>{t('quiz.delete')}</Text>
                 </TouchableOpacity>
               </View>
               <View style={styles.quizBody}>
                 <Text style={styles.title}>{quiz.title}</Text>
                 <Text style={styles.help}>
-                  {mine.length} question{mine.length > 1 ? 's' : ''}
+                  {t(mine.length > 1 ? 'quiz.questionsMany' : 'quiz.questionsOne', { n: mine.length })}
                 </Text>
               </View>
             </View>
@@ -478,7 +476,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
               disabled={mine.length === 0}
             >
               <Text style={styles.secondaryText}>
-                {mine.length > 0 ? 'Commencer' : 'Ajoute des questions avec Modifier'}
+                {mine.length > 0 ? t('quiz.start') : t('quiz.startEmpty')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -499,6 +497,7 @@ function QuestionPager({
   onIndex: (next: number) => void;
   onDelete: (id: string) => void;
 }) {
+  const { t } = useI18n();
   const count = items.length;
   const place = count === 0 ? 0 : Math.min(index, count - 1);
   const current = count === 0 ? null : items[place];
@@ -507,7 +506,7 @@ function QuestionPager({
   return (
     <View style={styles.pager}>
       <Text style={styles.label}>
-        {count} question{count > 1 ? 's' : ''}
+        {t(count > 1 ? 'quiz.questionsMany' : 'quiz.questionsOne', { n: count })}
       </Text>
       <View style={styles.pagerRow}>
         <TouchableOpacity
@@ -528,11 +527,11 @@ function QuestionPager({
       </View>
       {current && (
         <View style={styles.quiz}>
-          <Text style={styles.kind}>{current.kind === 'word' ? 'Mot' : 'Question'}</Text>
+          <Text style={styles.kind}>{current.kind === 'word' ? t('quiz.word') : t('quiz.question')}</Text>
           <Text style={styles.prompt}>{current.prompt}</Text>
           <Text style={styles.answer}>{current.answer}</Text>
           <TouchableOpacity onPress={() => onDelete(current.id)} style={styles.removeBtn}>
-            <Text style={styles.frontText}>Effacer</Text>
+            <Text style={styles.frontText}>{t('quiz.erase')}</Text>
           </TouchableOpacity>
         </View>
       )}

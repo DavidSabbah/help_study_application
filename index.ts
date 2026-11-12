@@ -7,11 +7,7 @@ import { I18nProvider } from './src/i18n/I18n';
 installDebugLog();
 
 function Root() {
-  return (
-    <I18nProvider>
-      <App />
-    </I18nProvider>
-  );
+  return React.createElement(I18nProvider, null, React.createElement(App));
 }
 
 registerRootComponent(Root);
