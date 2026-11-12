@@ -12,6 +12,8 @@ import * as Clipboard from 'expo-clipboard';
 import { LlmLink } from '../types';
 import { DEFAULT_LLM_LINKS } from '../storage/settingsStorage';
 import { readDebugLog } from '../debug/debugLog';
+import { useI18n } from '../i18n/I18n';
+import { APP_LANGUAGES, AppLanguage, languageOption } from '../i18n/languages';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -32,6 +34,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangePreprocess,
   onOpenLink
 }) => {
+  const { t, lang, followsPhone, phoneSupported, setAppLanguage, direction } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState<string>('');
   const [url, setUrl] = useState<string>('');
@@ -40,12 +43,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const copyLog = async () => {
     try {
       const text = await readDebugLog();
-      await Clipboard.setStringAsync(
-        text || 'Journal vide. Les lignes de plus de 3 jours sont effacées.'
-      );
-      setLogNote(text ? 'Journal copié.' : 'Journal vide.');
+      await Clipboard.setStringAsync(text || t('settings.logEmpty'));
+      setLogNote(text ? t('settings.logCopied') : t('settings.logEmpty'));
     } catch (err) {
-      setLogNote(err instanceof Error ? err.message : 'Copie impossible.');
+      setLogNote(err instanceof Error ? err.message : t('settings.logCopyFailed'));
     }
   };
 
@@ -110,10 +111,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
+      <View style={[styles.backdrop, { direction }]}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>⚙️ Settings</Text>
+            <Text style={styles.headerTitle}>⚙️ {t('settings.title')}</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
               <Text style={styles.closeBtnText}>✕</Text>
             </TouchableOpacity>
@@ -121,12 +122,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.sectionBox}>
-              <Text style={styles.sectionTitle}>Journal</Text>
-              <Text style={styles.optionHint}>
-                Les 3 derniers jours, taille limitée. Copie-le après un plantage sur le téléphone.
-              </Text>
+              <Text style={styles.sectionTitle}>{t('settings.language')}</Text>
+              <View style={styles.langRow}>
+                {APP_LANGUAGES.map((item) => {
+                  const active = item.code === lang;
+                  return (
+                    <TouchableOpacity
+                      key={item.code}
+                      onPress={() => setAppLanguage(item.code as AppLanguage)}
+                      style={[styles.langChip, active && styles.langChipOn]}
+                    >
+                      <Text style={[styles.langChipText, active && styles.langChipTextOn]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              {followsPhone && (
+                <Text style={styles.optionHint}>
+                  {phoneSupported
+                    ? t('settings.usingPhone', { language: languageOption(lang).label })
+                    : t('settings.phoneUnsupported', { language: languageOption(lang).label })}
+                </Text>
+              )}
+              {!followsPhone && (
+                <TouchableOpacity onPress={() => setAppLanguage('system')} style={styles.resetBtn}>
+                  <Text style={styles.resetBtnText}>{t('settings.usePhone')}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={[styles.sectionBox, styles.sectionGap]}>
+              <Text style={styles.sectionTitle}>{t('settings.journal')}</Text>
+              <Text style={styles.optionHint}>{t('settings.journalHint')}</Text>
               <TouchableOpacity onPress={copyLog} style={styles.resetBtn}>
-                <Text style={styles.resetBtnText}>Copier le journal</Text>
+                <Text style={styles.resetBtnText}>{t('settings.copyLog')}</Text>
               </TouchableOpacity>
               {logNote.length > 0 && <Text style={styles.optionHint}>{logNote}</Text>}
             </View>
@@ -134,17 +165,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <View style={[styles.sectionBox, styles.sectionGap]}>
               <View style={styles.optionRow}>
                 <View style={styles.optionCopy}>
-                  <Text style={styles.sectionTitle}>Pre-OCR processing</Text>
-                  <Text style={styles.optionHint}>
-                    Shadows, white paper, sharpening
-                  </Text>
+                  <Text style={styles.sectionTitle}>{t('settings.preprocess')}</Text>
+                  <Text style={styles.optionHint}>{t('settings.preprocessHint')}</Text>
                 </View>
                 <TouchableOpacity
                   onPress={() => onChangePreprocess(!preprocessEnabled)}
                   style={[styles.toggle, preprocessEnabled && styles.toggleOn]}
                 >
                   <Text style={styles.toggleText}>
-                    {preprocessEnabled ? 'ON' : 'OFF'}
+                    {preprocessEnabled ? t('settings.on') : t('settings.off')}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -152,7 +181,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <View style={[styles.sectionBox, styles.sectionGap]}>
               <View style={styles.rowBetween}>
-                <Text style={styles.sectionTitle}>Add / Edit Link</Text>
+                <Text style={styles.sectionTitle}>{t('settings.links')}</Text>
                 <TouchableOpacity
                   onPress={() => {
                     onChangeLinks([...DEFAULT_LLM_LINKS]);
@@ -160,11 +189,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }}
                   style={styles.resetBtn}
                 >
-                  <Text style={styles.resetBtnText}>↺ Reset Defaults</Text>
+                  <Text style={styles.resetBtnText}>{t('settings.reset')}</Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.fieldLabel}>Title</Text>
+              <Text style={styles.fieldLabel}>{t('settings.titleField')}</Text>
               <TextInput
                 style={styles.input}
                 placeholder="Gemini Rozensweig Notebook"
@@ -173,7 +202,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChangeText={setTitle}
               />
 
-              <Text style={styles.fieldLabel}>Address</Text>
+              <Text style={styles.fieldLabel}>{t('settings.address')}</Text>
               <TextInput
                 style={styles.input}
                 placeholder="https://notebook.google.com/notebook/4cc82aec-e02c-48ef-b2e9-c37f95e05fd1"
@@ -190,7 +219,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   style={styles.saveLinkBtn}
                 >
                   <Text style={styles.saveLinkBtnText}>
-                    {editingId ? '💾 Update Link' : '➕ Add Link'}
+                    {editingId ? t('settings.updateLink') : t('settings.addLink')}
                   </Text>
                 </TouchableOpacity>
 
@@ -199,12 +228,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onPress={resetForm}
                     style={styles.cancelEditBtn}
                   >
-                    <Text style={styles.cancelEditBtnText}>Cancel</Text>
+                    <Text style={styles.cancelEditBtnText}>{t('settings.cancel')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
 
-              {/* Configured Links List */}
               <View style={{ marginTop: 16, gap: 8 }}>
                 {links.map((item) => (
                   <View key={item.id} style={styles.linkRow}>
@@ -221,7 +249,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onPress={() => onOpenLink(item)}
                         style={styles.smallBtn}
                       >
-                        <Text style={styles.smallBtnText}>Open</Text>
+                        <Text style={styles.smallBtnText}>{t('settings.open')}</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         onPress={() => handleEdit(item)}
@@ -288,7 +316,33 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
     borderWidth: 1,
-    borderColor: '#334155'
+    borderColor: '#334155',
+    gap: 10
+  },
+  langRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  langChip: {
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  langChipOn: {
+    backgroundColor: '#4338ca',
+    borderColor: '#4338ca'
+  },
+  langChipText: {
+    color: '#cbd5e1',
+    fontSize: 13,
+    fontWeight: '700'
+  },
+  langChipTextOn: {
+    color: '#ffffff'
   },
   rowBetween: {
     flexDirection: 'row',

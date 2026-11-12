@@ -1,5 +1,6 @@
 import React from 'react';
 import { Text, TouchableOpacity, View, StyleSheet } from 'react-native';
+import { useI18n } from '../i18n/I18n';
 
 export interface HomeMenuItem {
   key: string;
@@ -10,11 +11,10 @@ export interface HomeMenuItem {
 }
 
 export const HomeMenu: React.FC<{ items: HomeMenuItem[] }> = ({ items }) => {
+  const { t } = useI18n();
   return (
     <View style={styles.wrap}>
-      <Text style={styles.lead}>
-        Choisis par où commencer. Le scan est une façon d'étudier, pas la seule.
-      </Text>
+      <Text style={styles.lead}>{t('home.lead')}</Text>
       {items.map((item) => (
         <TouchableOpacity key={item.key} onPress={item.onPress} style={styles.card}>
           <View style={styles.copy}>

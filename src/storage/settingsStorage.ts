@@ -1,10 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppLanguageChoice, isAppLanguage } from '../i18n/languages';
 import { LlmLink, OcrLanguageCode, OcrLanguageOption } from '../types';
 
 const STORAGE_KEY_LINKS = '@studylens/custom_links_v2';
 const STORAGE_KEY_LANGS = '@studylens/ocr_langs_v2';
 const STORAGE_KEY_PREPROCESS = '@studylens/preprocess_v1';
 const STORAGE_KEY_RESPONSE_LANG = '@studylens/response_lang_v1';
+const STORAGE_KEY_APP_LANG = '@studylens/app_lang_v1';
 
 export const AVAILABLE_OCR_LANGUAGES: OcrLanguageOption[] = [
   { code: 'heb', label: 'עברית', flag: '🇮🇱', short: 'HE' },
@@ -99,6 +101,20 @@ export async function loadResponseLang(): Promise<OcrLanguageCode> {
 
 export async function saveResponseLang(lang: OcrLanguageCode): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEY_RESPONSE_LANG, lang);
+}
+
+export async function loadAppLanguageChoice(): Promise<AppLanguageChoice> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_APP_LANG);
+    if (!raw || raw === 'system') return 'system';
+    return isAppLanguage(raw) ? raw : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+export async function saveAppLanguageChoice(choice: AppLanguageChoice): Promise<void> {
+  await AsyncStorage.setItem(STORAGE_KEY_APP_LANG, choice);
 }
 
 

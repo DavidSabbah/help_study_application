@@ -7,6 +7,7 @@ import {
   View,
   StyleSheet
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import {
   FICHE_LINE_LIMIT,
   Fiche,
@@ -19,6 +20,7 @@ import {
   saveFiche
 } from '../study/fiches';
 import { FichePlace } from '../session/appSession';
+import { useI18n } from '../i18n/I18n';
 
 type Pane = 'list' | 'edit' | 'recall';
 
@@ -32,36 +34,40 @@ function clipDraft(value: string): string {
   return value.replace(/\r\n/g, '\n').split('\n').slice(0, FICHE_LINE_LIMIT).join('\n');
 }
 
-function formatWhen(ms: number): string {
+function formatWhen(ms: number, locale: string): string {
   const date = new Date(ms);
-  const day = date.toLocaleDateString('fr-FR', {
+  const day = date.toLocaleDateString(locale, {
     day: 'numeric',
     month: 'short',
     year: 'numeric'
   });
-  const time = date.toLocaleTimeString('fr-FR', {
+  const time = date.toLocaleTimeString(locale, {
     hour: '2-digit',
     minute: '2-digit'
   });
   return `${day} · ${time}`;
 }
 
-function ficheDateLabel(fiche: Fiche): string {
-  const created = formatWhen(fiche.createdAt);
+function ficheDateLabel(
+  fiche: Fiche,
+  locale: string,
+  edited: (created: string, updated: string) => string
+): string {
+  const created = formatWhen(fiche.createdAt, locale);
   if (fiche.updatedAt - fiche.createdAt > 60_000) {
-    return `${created} · modifiée le ${formatWhen(fiche.updatedAt)}`;
+    return edited(created, formatWhen(fiche.updatedAt, locale));
   }
   return created;
 }
 
 type FicheOrder = 'recent' | 'ancien' | 'modifie' | 'az' | 'za';
 
-const ORDER_OPTIONS: { id: FicheOrder; label: string }[] = [
-  { id: 'recent', label: 'Récentes' },
-  { id: 'ancien', label: 'Anciennes' },
-  { id: 'modifie', label: 'Modifiées' },
-  { id: 'az', label: 'A → Z' },
-  { id: 'za', label: 'Z → A' }
+const ORDER_OPTIONS: { id: FicheOrder; labelKey: 'fiche.recent' | 'fiche.old' | 'fiche.edited' | 'fiche.az' | 'fiche.za' }[] = [
+  { id: 'recent', labelKey: 'fiche.recent' },
+  { id: 'ancien', labelKey: 'fiche.old' },
+  { id: 'modifie', labelKey: 'fiche.edited' },
+  { id: 'az', labelKey: 'fiche.az' },
+  { id: 'za', labelKey: 'fiche.za' }
 ];
 
 function fold(value: string): string {
@@ -77,19 +83,20 @@ function matchesQuery(fiche: Fiche, query: string): boolean {
   return fold(fiche.text).includes(needle);
 }
 
-function sortFiches(list: Fiche[], order: FicheOrder): Fiche[] {
+function sortFiches(list: Fiche[], order: FicheOrder, locale: string): Fiche[] {
   const next = [...list];
   next.sort((a, b) => {
     if (order === 'recent') return b.createdAt - a.createdAt || a.id.localeCompare(b.id);
     if (order === 'ancien') return a.createdAt - b.createdAt || a.id.localeCompare(b.id);
     if (order === 'modifie') return b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
-    const cmp = ficheTitle(a.text).localeCompare(ficheTitle(b.text), 'fr', { sensitivity: 'base' });
+    const cmp = ficheTitle(a.text).localeCompare(ficheTitle(b.text), locale, { sensitivity: 'base' });
     return order === 'az' ? cmp || a.id.localeCompare(b.id) : -cmp || a.id.localeCompare(b.id);
   });
   return next;
 }
 
 export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, backRef }) => {
+  const { t, locale } = useI18n();
   const boot = useRef(initial);
   const [pane, setPane] = useState<Pane>(boot.current?.pane || 'list');
   const [fiches, setFiches] = useState<Fiche[]>([]);
@@ -103,8 +110,8 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
   const [order, setOrder] = useState<FicheOrder>('recent');
 
   const shown = useMemo(
-    () => sortFiches(fiches.filter((fiche) => matchesQuery(fiche, query)), order),
-    [fiches, query, order]
+    () => sortFiches(fiches.filter((fiche) => matchesQuery(fiche, query)), order, locale),
+    [fiches, query, order, locale]
   );
 
   const reload = useCallback(async () => {
@@ -171,27 +178,27 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
     const next = clipDraft(value);
     setDraft(next);
     if (next !== value.replace(/\r\n/g, '\n')) {
-      setStatus(`Une fiche tient en ${FICHE_LINE_LIMIT} lignes.`);
+      setStatus(t('fiche.lineLimit', { max: FICHE_LINE_LIMIT }));
     }
   };
 
   const save = async () => {
     const saved = await saveFiche(editingId, draft);
     if (!saved) {
-      setStatus("Écris l'idée.");
+      setStatus(t('fiche.needIdea'));
       return;
     }
-    setStatus(editingId ? 'Fiche enregistrée.' : 'Fiche ajoutée.');
+    setStatus(editingId ? t('fiche.saved') : t('fiche.added'));
     setEditingId(saved.id);
     setDraft(saved.text);
     await reload();
   };
 
   const confirmRemove = (fiche: Fiche) => {
-    Alert.alert('Supprimer cette fiche', 'Elle sera effacée de ce téléphone.', [
-      { text: 'Annuler', style: 'cancel' },
+    Alert.alert(t('fiche.deleteTitle'), t('fiche.deleteBody'), [
+      { text: t('fiche.cancel'), style: 'cancel' },
       {
-        text: 'Supprimer',
+        text: t('fiche.delete'),
         style: 'destructive',
         onPress: async () => {
           await deleteFiche(fiche.id);
@@ -200,7 +207,7 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
             setDraft('');
             setPane('list');
           }
-          setStatus('Fiche supprimée.');
+          setStatus(t('fiche.deleted'));
           await reload();
         }
       }
@@ -232,15 +239,13 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
     return (
       <View style={styles.card}>
         <TouchableOpacity onPress={() => setPane('list')}>
-          <Text style={styles.link}>Toutes les fiches</Text>
+          <Text style={styles.link}>{t('fiche.all')}</Text>
         </TouchableOpacity>
         {done ? (
           <View style={styles.block}>
-            <Text style={styles.help}>
-              C'est le tour. Les mêmes idées peuvent revenir dans un autre ordre.
-            </Text>
+            <Text style={styles.help}>{t('fiche.recallDone')}</Text>
             <TouchableOpacity onPress={startRecall} style={styles.primary}>
-              <Text style={styles.primaryText}>Tirer à nouveau</Text>
+              <Text style={styles.primaryText}>{t('fiche.drawAgain')}</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -254,7 +259,7 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
               style={styles.primary}
             >
               <Text style={styles.primaryText}>
-                {place + 1 >= deck.length ? 'Terminer' : 'Suivante'}
+                {place + 1 >= deck.length ? t('fiche.finish') : t('fiche.next')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -267,36 +272,39 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
     const lines = ficheLineCount(draft);
     return (
       <View style={styles.card}>
-        <TouchableOpacity onPress={() => setPane('list')}>
-          <Text style={styles.link}>Toutes les fiches</Text>
-        </TouchableOpacity>
-        <Text style={styles.label}>L'idée</Text>
+        <View style={styles.head}>
+          <TouchableOpacity onPress={() => setPane('list')} style={styles.cardMain}>
+            <Text style={styles.link}>{t('fiche.all')}</Text>
+          </TouchableOpacity>
+          {editingId && (
+            <TouchableOpacity
+              onPress={() => {
+                const fiche = fiches.find((item) => item.id === editingId);
+                if (fiche) confirmRemove(fiche);
+              }}
+              style={styles.iconBtn}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              accessibilityRole="button"
+              accessibilityLabel={t('fiche.remove')}
+            >
+              <Ionicons name="trash-outline" size={18} color="#fca5a5" />
+            </TouchableOpacity>
+          )}
+        </View>
+        <Text style={styles.label}>{t('fiche.idea')}</Text>
         <TextInput
           style={[styles.input, styles.ideaInput]}
           multiline
           value={draft}
           onChangeText={changeDraft}
-          placeholder={'Une idée, en quelques lignes.\nCe qui se passe dans la tête.'}
+          placeholder={t('fiche.ideaPlaceholder')}
           placeholderTextColor="#64748b"
           textAlignVertical="top"
         />
-        <Text style={styles.help}>
-          {lines} / {FICHE_LINE_LIMIT} lignes
-        </Text>
+        <Text style={styles.help}>{t('fiche.lines', { n: lines, max: FICHE_LINE_LIMIT })}</Text>
         <TouchableOpacity onPress={save} style={styles.primary}>
-          <Text style={styles.primaryText}>Enregistrer</Text>
+          <Text style={styles.primaryText}>{t('fiche.save')}</Text>
         </TouchableOpacity>
-        {editingId && (
-          <TouchableOpacity
-            onPress={() => {
-              const fiche = fiches.find((item) => item.id === editingId);
-              if (fiche) confirmRemove(fiche);
-            }}
-            style={styles.remove}
-          >
-            <Text style={styles.primaryText}>Supprimer</Text>
-          </TouchableOpacity>
-        )}
         {status.length > 0 && <Text style={styles.status}>{status}</Text>}
       </View>
     );
@@ -304,11 +312,9 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.help}>
-        Une fiche est une idée, en dix lignes au plus. Le tirage au sort les rappelle, une après l'autre.
-      </Text>
+      <Text style={styles.help}>{t('fiche.intro')}</Text>
       <TouchableOpacity onPress={openNew} style={styles.primary}>
-        <Text style={styles.primaryText}>Nouvelle fiche</Text>
+        <Text style={styles.primaryText}>{t('fiche.new')}</Text>
       </TouchableOpacity>
       <TouchableOpacity
         onPress={startRecall}
@@ -316,23 +322,23 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
         style={fiches.length === 0 ? styles.secondaryMuted : styles.secondary}
       >
         <Text style={styles.secondaryText}>
-          {fiches.length === 0 ? 'Ajoute une fiche pour la tirer' : 'Tirer au sort'}
+          {fiches.length === 0 ? t('fiche.drawNeed') : t('fiche.draw')}
         </Text>
       </TouchableOpacity>
       {status.length > 0 && <Text style={styles.status}>{status}</Text>}
-      {fiches.length === 0 && <Text style={styles.help}>Aucune fiche pour l'instant.</Text>}
+      {fiches.length === 0 && <Text style={styles.help}>{t('fiche.empty')}</Text>}
       {fiches.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.label}>Filtrer</Text>
+          <Text style={styles.label}>{t('fiche.filter')}</Text>
           <TextInput
             style={styles.input}
             value={query}
             onChangeText={setQuery}
-            placeholder="Un mot du titre ou du texte"
+            placeholder={t('fiche.filterPlaceholder')}
             placeholderTextColor="#64748b"
             autoCorrect={false}
           />
-          <Text style={styles.label}>Ordre</Text>
+          <Text style={styles.label}>{t('fiche.order')}</Text>
           <View style={styles.orderRow}>
             {ORDER_OPTIONS.map((option) => {
               const active = option.id === order;
@@ -342,20 +348,20 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
                   onPress={() => setOrder(option.id)}
                   style={active ? styles.orderOn : styles.orderOff}
                 >
-                  <Text style={active ? styles.orderOnText : styles.orderOffText}>{option.label}</Text>
+                  <Text style={active ? styles.orderOnText : styles.orderOffText}>{t(option.labelKey)}</Text>
                 </TouchableOpacity>
               );
             })}
           </View>
           <Text style={styles.help}>
             {query.trim().length > 0
-              ? `${shown.length} sur ${fiches.length}`
-              : `${shown.length} fiche${shown.length > 1 ? 's' : ''}`}
+              ? t('fiche.countFiltered', { shown: shown.length, total: fiches.length })
+              : t(shown.length > 1 ? 'fiche.countMany' : 'fiche.countOne', { n: shown.length })}
           </Text>
         </View>
       )}
       {fiches.length > 0 && shown.length === 0 && (
-        <Text style={styles.help}>Aucune fiche ne correspond à ce filtre.</Text>
+        <Text style={styles.help}>{t('fiche.noMatch')}</Text>
       )}
       {shown.map((fiche) => {
         const preview = fichePreview(fiche.text);
@@ -366,21 +372,41 @@ export const FicheScreen: React.FC<FicheScreenProps> = ({ initial, onPlace, back
             onPress={() => openEdit(fiche)}
             activeOpacity={0.85}
           >
-            <Text style={styles.title}>{ficheTitle(fiche.text)}</Text>
-            <Text style={styles.date}>{ficheDateLabel(fiche)}</Text>
+            <View style={styles.head}>
+              <View style={styles.cardMain}>
+                <Text style={styles.title}>{ficheTitle(fiche.text) || t('fiche.emptyTitle')}</Text>
+                <Text style={styles.date}>
+                  {ficheDateLabel(fiche, locale, (created, updated) =>
+                    t('fiche.editedOn', { created, updated })
+                  )}
+                </Text>
+              </View>
+              <View style={styles.iconRow}>
+                <TouchableOpacity
+                  onPress={() => openEdit(fiche)}
+                  style={styles.iconBtn}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('fiche.edit')}
+                >
+                  <Ionicons name="pencil-outline" size={18} color="#c7d2fe" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => confirmRemove(fiche)}
+                  style={styles.iconBtn}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('fiche.remove')}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#fca5a5" />
+                </TouchableOpacity>
+              </View>
+            </View>
             {preview.length > 0 && (
               <Text style={styles.help} numberOfLines={2}>
                 {preview}
               </Text>
             )}
-            <View style={styles.row}>
-              <TouchableOpacity onPress={() => openEdit(fiche)} style={styles.modifyBtn}>
-                <Text style={styles.smallText}>Modifier</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => confirmRemove(fiche)} style={styles.removeBtn}>
-                <Text style={styles.smallText}>Supprimer</Text>
-              </TouchableOpacity>
-            </View>
           </TouchableOpacity>
         );
       })}
@@ -453,9 +479,27 @@ const styles = StyleSheet.create({
     minHeight: 180,
     textAlignVertical: 'top'
   },
-  row: {
+  head: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 8
+  },
+  cardMain: {
+    flex: 1,
+    gap: 4
+  },
+  iconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4
+  },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0f172a'
   },
   orderRow: {
     flexDirection: 'row',
@@ -513,29 +557,6 @@ const styles = StyleSheet.create({
   },
   secondaryText: {
     color: '#f8fafc',
-    fontWeight: '700'
-  },
-  remove: {
-    backgroundColor: '#7f1d1d',
-    borderRadius: 10,
-    alignItems: 'center',
-    paddingVertical: 12
-  },
-  modifyBtn: {
-    backgroundColor: '#4338ca',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
-  removeBtn: {
-    backgroundColor: '#7f1d1d',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
-  smallText: {
-    color: '#ffffff',
-    fontSize: 12,
     fontWeight: '700'
   },
   status: {

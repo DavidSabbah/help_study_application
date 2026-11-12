@@ -25,6 +25,7 @@ import {
   setOpenQuiz
 } from '../study/quizzes';
 import { QuizPlace } from '../session/appSession';
+import { useI18n } from '../i18n/I18n';
 
 type Pane = 'list' | 'detail' | 'play';
 
@@ -47,6 +48,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   backRef,
   onAsk
 }) => {
+  const { t } = useI18n();
   const boot = useRef(initial);
   const [pane, setPane] = useState<Pane>(boot.current?.pane || 'list');
   const [quizzes, setQuizzes] = useState<StudyQuiz[]>([]);
@@ -172,60 +174,56 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     if (!name) return;
     await createQuiz(name);
     setTitle('');
-    setStatus(`« ${name} » est ajouté. Tu peux en créer d'autres.`);
+    setStatus(t('quiz.added', { name }));
     await reload();
   };
 
   const confirmRemove = (quiz: StudyQuiz) => {
-    Alert.alert(
-      'Supprimer ce quiz',
-      `« ${quiz.title} » et ses questions seront effacés de ce téléphone.`,
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: async () => {
-            await deleteQuiz(quiz.id);
-            if (selectedId === quiz.id) {
-              setSelectedId(null);
-              setPane('list');
-            }
-            setStatus(`« ${quiz.title} » est supprimé.`);
-            await reload();
+    Alert.alert(t('quiz.deleteTitle'), t('quiz.deleteBody', { name: quiz.title }), [
+      { text: t('quiz.cancel'), style: 'cancel' },
+      {
+        text: t('quiz.delete'),
+        style: 'destructive',
+        onPress: async () => {
+          await deleteQuiz(quiz.id);
+          if (selectedId === quiz.id) {
+            setSelectedId(null);
+            setPane('list');
           }
+          setStatus(t('quiz.deleted', { name: quiz.title }));
+          await reload();
         }
-      ]
-    );
+      }
+    ]);
   };
 
   const saveName = async () => {
     if (!selectedId) return;
     const saved = await renameQuiz(selectedId, editTitle);
     if (!saved) {
-      setStatus('Écris un nom.');
+      setStatus(t('quiz.needName'));
       return;
     }
-    setStatus('Nom enregistré.');
+    setStatus(t('quiz.nameSaved'));
     await reload();
   };
 
   const removeItem = async (id: string) => {
     await deleteQuizItem(id);
-    setStatus('Question effacée.');
+    setStatus(t('quiz.questionDeleted'));
     await reload();
   };
 
   const askMore = () => {
     if (!selected) return;
     onAsk(askPrompt(selected, selectedItems, answerLanguage));
-    setStatus(`Demande copiée pour ${linkTitle}. Copie la réponse, puis ajoute-la ici.`);
+    setStatus(t('quiz.askCopied', { link: linkTitle }));
   };
 
   const pasteReply = async () => {
     const value = await Clipboard.getStringAsync();
     if (!value.trim()) {
-      setStatus('Le presse-papiers est vide.');
+      setStatus(t('quiz.clipboardEmpty'));
       return;
     }
     setReply(value);
@@ -235,12 +233,13 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     if (!selectedId) return;
     const result = await addLinesToQuiz(selectedId, reply);
     if (result.added === 0 && result.updated === 0) {
-      setStatus('Rien à ajouter. Une ligne doit ressembler à : mot | terme | sens');
+      setStatus(t('quiz.nothingToAdd'));
       return;
     }
     setStatus(
-      `${result.added} ajouté${result.added > 1 ? 's' : ''}` +
-        (result.updated ? `, ${result.updated} mis à jour.` : '.')
+      result.updated
+        ? t('quiz.addedUpdated', { added: result.added, updated: result.updated })
+        : t('quiz.addedOnly', { added: result.added })
     );
     setReply('');
     const data = await reload();
@@ -257,12 +256,12 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
       manualAnswer
     );
     if (!saved) {
-      setStatus('Écris la question et la réponse.');
+      setStatus(t('quiz.needBoth'));
       return;
     }
     setManualPrompt('');
     setManualAnswer('');
-    setStatus(manualKind === 'word' ? 'Mot ajouté.' : 'Question ajoutée.');
+    setStatus(manualKind === 'word' ? t('quiz.wordAdded') : t('quiz.questionAdded'));
     const data = await reload();
     const count = data.items.filter((item) => item.quizId === selectedId).length;
     setQuestionIndex(Math.max(0, count - 1));
@@ -303,33 +302,29 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
           </TouchableOpacity>
         </View>
         {!current ? (
-          <Text style={styles.help}>
-            C'est fini pour cette fois. Une bonne réponse fait monter d'un cran. Une erreur fait reculer d'un cran.
-          </Text>
+          <Text style={styles.help}>{t('quiz.playDone')}</Text>
         ) : (
           <View style={styles.quiz}>
-            <Text style={styles.kind}>{current.kind === 'word' ? 'Mot' : 'Question'}</Text>
+            <Text style={styles.kind}>{current.kind === 'word' ? t('quiz.word') : t('quiz.question')}</Text>
             <Text style={styles.prompt}>{current.prompt}</Text>
             {revealed ? (
               <Text style={styles.answer}>{current.answer}</Text>
             ) : (
               <TouchableOpacity onPress={() => setRevealed(true)} style={styles.primary}>
-                <Text style={styles.primaryText}>Suivant</Text>
+                <Text style={styles.primaryText}>{t('quiz.show')}</Text>
               </TouchableOpacity>
             )}
             {revealed && (
               <View style={styles.grades}>
                 <TouchableOpacity onPress={() => grade(false)} style={styles.again}>
-                  <Text style={styles.gradeText}>Pas bien</Text>
+                  <Text style={styles.gradeText}>{t('quiz.again')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => grade(true)} style={styles.easy}>
-                  <Text style={styles.gradeText}>Bien répondu</Text>
+                  <Text style={styles.gradeText}>{t('quiz.known')}</Text>
                 </TouchableOpacity>
               </View>
             )}
-            <Text style={styles.help}>
-              {queue.length} en attente. Pas bien recule d'un cran. Bien répondu avance d'un cran : pas connu, à peu près, puis connu.
-            </Text>
+            <Text style={styles.help}>{t('quiz.waiting', { n: queue.length })}</Text>
           </View>
         )}
       </View>

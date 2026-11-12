@@ -27,7 +27,7 @@ export function ficheLineCount(text: string): number {
 
 export function ficheTitle(text: string): string {
   const line = text.split('\n').map((part) => part.trim()).find((part) => part.length > 0);
-  return line || 'Fiche vide';
+  return line || '';
 }
 
 export function fichePreview(text: string): string {
