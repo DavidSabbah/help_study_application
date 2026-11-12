@@ -58,9 +58,16 @@ import {
   STUDY_TASKS,
   StudyTaskKey,
   buildTaskPrompt,
+  imagePageNote,
   isRtlLanguage,
   taskSentence
 } from './src/llmPrompts';
+import {
+  PagePaste,
+  copyImageThenText,
+  loadRoiImages,
+  shareImageWithText
+} from './src/clipboardPage';
 import {
   dueItems,
   loadStudyData,
@@ -70,6 +77,12 @@ import {
 
 type AppPhase = 'home' | 'capture' | 'prompt' | 'browser' | 'quiz';
 type TaskChoice = StudyTaskKey | 'quiz_words' | 'quiz_questions';
+type PageSource = 'ocr' | 'image';
+
+function linkNeedsOcr(link: LlmLink | undefined): boolean {
+  if (!link) return false;
+  return `${link.title} ${link.url}`.toLowerCase().includes('notebook');
+}
 
 function withHttp(url: string): string {
   const trimmed = url.trim();
@@ -117,6 +130,9 @@ export default function App() {
   const [ocrStatus, setOcrStatus] = useState<string>('');
   const [ocrPercent, setOcrPercent] = useState<number>(0);
   const [ocrText, setOcrText] = useState<string>('');
+  const [pageSource, setPageSource] = useState<PageSource>('ocr');
+  const [copiedPrompt, setCopiedPrompt] = useState<string>('');
+  const [promptFlash, setPromptFlash] = useState<boolean>(false);
   const [selectedTask, setSelectedTask] = useState<TaskChoice>('explain_lines');
   const [taskText, setTaskText] = useState<string>(
     taskSentence('fra', 'explain_lines')
@@ -128,6 +144,7 @@ export default function App() {
     title: string;
     returnTo: 'prompt' | 'settings';
     copied: boolean;
+    paste: PagePaste | 'text';
   } | null>(null);
   const [screenUnderBrowser, setScreenUnderBrowser] = useState<
     'capture' | 'prompt' | 'quiz'
@@ -203,6 +220,7 @@ export default function App() {
     setIsPhotoCleaned(false);
     setRois([]);
     setOcrText('');
+    setPageSource('ocr');
     setProcessedPreviews([]);
     setPreprocessStats([]);
     setOcrStatus('');
@@ -486,6 +504,14 @@ export default function App() {
     ocrBridgeRef.current?.recognizeRois(rois, selectedLangs, shouldPreprocess);
   };
 
+  const handleSkipOcr = () => {
+    if (rois.length === 0 || ocrRunning || enhancingPhoto || isDrawingRoi) return;
+    setPageSource('image');
+    setOcrText('');
+    setOcrStatus('');
+    showPhase('prompt');
+  };
+
   const pageLang = selectedLangs[0] || 'fra';
   const pageDirection = isRtlLanguage(pageLang) ? 'rtl' : 'ltr';
   const answerDirection = isRtlLanguage(responseLang) ? 'rtl' : 'ltr';
@@ -526,12 +552,13 @@ export default function App() {
     url: string,
     title: string,
     returnTo: 'prompt' | 'settings',
-    copied: boolean
+    copied: boolean,
+    paste: PagePaste | 'text' = 'text'
   ) => {
     if (phase === 'capture' || phase === 'prompt' || phase === 'quiz') {
       setScreenUnderBrowser(phase);
     }
-    setBrowser({ url: withHttp(url), title, returnTo, copied });
+    setBrowser({ url: withHttp(url), title, returnTo, copied, paste });
     if (returnTo === 'settings') setSettingsVisible(false);
     showPhase('browser');
   };
@@ -596,15 +623,50 @@ export default function App() {
 
   const handleExecute = async () => {
     if (!selectedLink) return;
-    const prompt = buildTaskPrompt(taskText, responseLang, ocrText);
-    await Clipboard.setStringAsync(prompt);
-    openBrowser(selectedLink.url, selectedLink.title, 'prompt', true);
+    const withImage = pageSource === 'image';
+    const prompt = buildTaskPrompt(taskText, responseLang, ocrText, withImage);
+    setCopiedPrompt(prompt);
+    setPromptFlash(false);
+    if (!withImage) {
+      await Clipboard.setStringAsync(prompt);
+      openBrowser(selectedLink.url, selectedLink.title, 'prompt', true, 'text');
+      return;
+    }
+    try {
+      const images = await loadRoiImages(rois);
+      if (images.length === 0) {
+        Alert.alert('No crop', 'Draw a region on the photo, or tap Full.');
+        return;
+      }
+      const paste = await copyImageThenText(images, prompt, (list) => {
+        const bridge = ocrBridgeRef.current;
+        if (!bridge) return Promise.reject(new Error('The page image is not ready.'));
+        return bridge.stitchImages(list);
+      });
+      openBrowser(selectedLink.url, selectedLink.title, 'prompt', true, paste);
+    } catch (err) {
+      Alert.alert(
+        'Copy failed',
+        err instanceof Error ? err.message : 'Could not copy the cropped page.'
+      );
+    }
+  };
+
+  const handleCopyPromptAgain = async () => {
+    if (!copiedPrompt) return;
+    await Clipboard.setStringAsync(copiedPrompt);
+    setPromptFlash(true);
   };
 
   const handleSharePrompt = async () => {
-    const prompt = buildTaskPrompt(taskText, responseLang, ocrText);
+    const withImage = pageSource === 'image';
+    const prompt = buildTaskPrompt(taskText, responseLang, ocrText, withImage);
     if (!prompt.trim()) return;
     try {
+      if (withImage) {
+        const images = await loadRoiImages(rois);
+        if (images.length > 0 && (await shareImageWithText(images, prompt))) return;
+      }
       await Share.share({ message: prompt });
     } catch {
       // The sheet was dismissed.
@@ -642,6 +704,7 @@ export default function App() {
           setOcrStatus(
             `✅ Local OCR complete (${selectedLangs.join('+')})${statNote}`
           );
+          setPageSource('ocr');
           setOcrText(
             text ||
             '(No text detected — go back to the photo and draw a tighter region, or type the text here.)'
@@ -733,9 +796,29 @@ export default function App() {
             </Text>
           </View>
           {browser.copied && (
-            <Text style={styles.browserHint}>
-              Prompt copied. Paste it into the page, then copy the answer and add it to a quiz.
-            </Text>
+            <View style={styles.browserHintWrap}>
+              <Text style={styles.browserHint}>
+                {browser.paste === 'together'
+                  ? 'Image and prompt copied. Paste once: the image comes first, then the text. If only the image lands, tap Copy prompt only and paste the text under it.'
+                  : browser.paste === 'image-first'
+                    ? 'Image copied. Paste it, then tap Copy prompt and paste the text under the image.'
+                    : 'Prompt copied. Paste it into the page, then copy the answer and add it to a quiz.'}
+              </Text>
+              {browser.paste !== 'text' && (
+                <TouchableOpacity
+                  onPress={handleCopyPromptAgain}
+                  style={styles.copyPromptBtn}
+                >
+                  <Text style={styles.copyPromptBtnText}>
+                    {promptFlash
+                      ? 'Prompt copied'
+                      : browser.paste === 'together'
+                        ? 'Copy prompt only'
+                        : 'Copy prompt'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
           )}
           <WebView
             source={{ uri: browser.url }}
@@ -964,6 +1047,26 @@ export default function App() {
                 </Text>
               </TouchableOpacity>
 
+              <TouchableOpacity
+                onPress={handleSkipOcr}
+                disabled={
+                  rois.length === 0 || ocrRunning || enhancingPhoto || isDrawingRoi
+                }
+                style={[
+                  styles.secondaryActionBtn,
+                  (rois.length === 0 ||
+                    ocrRunning ||
+                    enhancingPhoto ||
+                    isDrawingRoi) &&
+                    styles.btnDisabled
+                ]}
+              >
+                <Text style={styles.secondaryActionBtnText}>Next without OCR</Text>
+              </TouchableOpacity>
+              <Text style={styles.actionNote}>
+                OCR writes the page as text, for NotebookLM. Next keeps the crop: the image is pasted first, then the prompt, and the model reads the page, including pictures.
+              </Text>
+
               {ocrText.length > 0 && !ocrRunning && (
                 <TouchableOpacity
                   onPress={() => showPhase('prompt')}
@@ -1080,6 +1183,49 @@ export default function App() {
               })}
             </View>
 
+            {pageSource === 'image' && (
+              <View>
+                <Text style={styles.fieldLabel}>Cropped page</Text>
+                <Text style={styles.actionNote}>{imagePageNote(responseLang)}</Text>
+                {rois.map((roi, idx) => {
+                  const uri = roiSourceUri(roi);
+                  if (!uri) return null;
+                  return (
+                    <TouchableOpacity
+                      key={roi.id}
+                      onPress={() =>
+                        openZoom(
+                          `Crop ${idx + 1}`,
+                          rois
+                            .map((item, itemIdx) => {
+                              const slide = roiSourceUri(item);
+                              return slide
+                                ? { label: `Crop ${itemIdx + 1}`, uri: slide }
+                                : null;
+                            })
+                            .filter((slide): slide is ZoomSlide => slide !== null),
+                          idx
+                        )
+                      }
+                      activeOpacity={0.85}
+                      style={styles.promptCropWrap}
+                    >
+                      <Image
+                        source={{ uri }}
+                        style={styles.promptCrop}
+                        resizeMode="contain"
+                      />
+                    </TouchableOpacity>
+                  );
+                })}
+                {linkNeedsOcr(selectedLink) && (
+                  <Text style={styles.warnNote}>
+                    NotebookLM cannot take an image. Go back and run OCR to send this page there.
+                  </Text>
+                )}
+              </View>
+            )}
+
             <Text style={styles.fieldLabel}>Open in</Text>
             <ComboBox
               value={selectedLink?.id || ''}
@@ -1099,7 +1245,9 @@ export default function App() {
               <Text style={styles.primaryActionBtnText}>Execute</Text>
             </TouchableOpacity>
 
-            <Text style={styles.fieldLabel}>Extracted text</Text>
+            <Text style={styles.fieldLabel}>
+              {pageSource === 'image' ? 'Extra text' : 'Extracted text'}
+            </Text>
             <TextInput
               style={[
                 styles.input,
@@ -1108,7 +1256,11 @@ export default function App() {
                 pageDirection === 'rtl' && styles.inputRtl
               ]}
               multiline
-              placeholder="Text from the page"
+              placeholder={
+                pageSource === 'image'
+                  ? 'Optional. The page itself is the image.'
+                  : 'Text from the page'
+              }
               placeholderTextColor="#64748b"
               value={ocrText}
               onChangeText={setOcrText}
@@ -1456,6 +1608,46 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700'
   },
+  secondaryActionBtn: {
+    marginTop: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#6366f1',
+    paddingVertical: 13,
+    borderRadius: 10,
+    alignItems: 'center'
+  },
+  secondaryActionBtnText: {
+    color: '#e0e7ff',
+    fontSize: 14,
+    fontWeight: '700'
+  },
+  actionNote: {
+    color: '#94a3b8',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 8
+  },
+  warnNote: {
+    color: '#fbbf24',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 8
+  },
+  promptCropWrap: {
+    marginTop: 8,
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 6
+  },
+  promptCrop: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#ffffff',
+    borderRadius: 4
+  },
   ocrStatusCard: {
     marginTop: 10,
     backgroundColor: '#0f172a',
@@ -1560,11 +1752,27 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700'
   },
+  browserHintWrap: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 8
+  },
   browserHint: {
     color: '#a5b4fc',
     fontSize: 12,
-    paddingHorizontal: 16,
-    paddingBottom: 6
+    lineHeight: 17
+  },
+  copyPromptBtn: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#334155',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  copyPromptBtnText: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700'
   },
   browserSpinner: {
     marginTop: 24

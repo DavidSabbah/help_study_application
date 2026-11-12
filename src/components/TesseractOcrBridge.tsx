@@ -18,6 +18,8 @@ export interface TesseractOcrBridgeHandle {
     preprocess?: boolean
   ) => void;
   enhanceImage: (base64: string) => void;
+  /** Stack cropped regions into one JPEG, raw base64, for a single paste. */
+  stitchImages: (images: string[]) => Promise<string>;
 }
 
 interface TesseractOcrBridgeProps {
@@ -1565,12 +1567,53 @@ const TESSERACT_WEBVIEW_HTML = `
     }
   }
 
+  function stitchImages(list) {
+    if (!list || !list.length) {
+      postToRN({ type: 'stitch_error', error: 'No image' });
+      return;
+    }
+    Promise.all(list.map(loadImageFromBase64)).then(function(imgs) {
+      var gap = 28;
+      var width = 0;
+      var height = 0;
+      for (var i = 0; i < imgs.length; i++) {
+        width = Math.max(width, imgs[i].naturalWidth || imgs[i].width);
+        height += imgs[i].naturalHeight || imgs[i].height;
+      }
+      height += gap * (imgs.length - 1);
+      var scale = width > 1600 ? 1600 / width : 1;
+      if (height * scale > 5000) scale = 5000 / height;
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      var y = 0;
+      for (var j = 0; j < imgs.length; j++) {
+        var w = imgs[j].naturalWidth || imgs[j].width;
+        var h = imgs[j].naturalHeight || imgs[j].height;
+        ctx.drawImage(imgs[j], Math.round((width - w) / 2), y);
+        y += h + gap;
+      }
+      postToRN({ type: 'stitch', base64: canvas.toDataURL('image/jpeg', 0.9) });
+    }).catch(function(err) {
+      postToRN({
+        type: 'stitch_error',
+        error: (err && err.message) || 'Could not join the crops'
+      });
+    });
+  }
+
   window.runOcrJobFromRN = function(payload) {
     if (!payload) return;
     if (payload.command === 'run_ocr') {
       runOcrJob(payload.rois, payload.lang, payload.preprocess);
     } else if (payload.command === 'enhance_image') {
       runEnhanceJob(payload.base64);
+    } else if (payload.command === 'stitch') {
+      stitchImages(payload.images);
     }
   };
 
@@ -1598,6 +1641,10 @@ export const TesseractOcrBridge = forwardRef<
   TesseractOcrBridgeProps
 >(({ onProgress, onComplete, onEnhanceComplete, onError }, ref) => {
   const webviewRef = useRef<WebView>(null);
+  const stitchWait = useRef<{
+    resolve: (base64: string) => void;
+    reject: (err: Error) => void;
+  } | null>(null);
 
   useImperativeHandle(ref, () => ({
     recognizeRois: (
@@ -1638,7 +1685,41 @@ export const TesseractOcrBridge = forwardRef<
       webviewRef.current?.injectJavaScript(
         `if (window.runOcrJobFromRN) { window.runOcrJobFromRN(${payload}); } true;`
       );
-    }
+    },
+    stitchImages: (images: string[]) =>
+      new Promise<string>((resolve, reject) => {
+        if (images.length === 0) {
+          reject(new Error('No cropped image to copy.'));
+          return;
+        }
+        if (images.length === 1) {
+          resolve(images[0]);
+          return;
+        }
+        if (!webviewRef.current) {
+          reject(new Error('The page image is not ready.'));
+          return;
+        }
+        const timer = setTimeout(() => {
+          if (!stitchWait.current) return;
+          stitchWait.current = null;
+          reject(new Error('Could not join the crops.'));
+        }, 12000);
+        stitchWait.current = {
+          resolve: (base64) => {
+            clearTimeout(timer);
+            resolve(base64);
+          },
+          reject: (err) => {
+            clearTimeout(timer);
+            reject(err);
+          }
+        };
+        const payload = JSON.stringify({ command: 'stitch', images });
+        webviewRef.current.injectJavaScript(
+          `if (window.runOcrJobFromRN) { window.runOcrJobFromRN(${payload}); } true;`
+        );
+      })
   }));
 
   const handleMessage = (event: WebViewMessageEvent) => {
@@ -1650,6 +1731,17 @@ export const TesseractOcrBridge = forwardRef<
         onComplete(data.text || '', data.processedRois, data.stats);
       } else if (data.type === 'enhance_complete') {
         onEnhanceComplete?.(data.base64, data.stats);
+      } else if (data.type === 'stitch') {
+        const wait = stitchWait.current;
+        stitchWait.current = null;
+        const raw = String(data.base64 || '');
+        const clean = raw.includes(',') ? raw.split(',')[1] : raw;
+        if (!clean) wait?.reject(new Error('Could not join the crops.'));
+        else wait?.resolve(clean);
+      } else if (data.type === 'stitch_error') {
+        const wait = stitchWait.current;
+        stitchWait.current = null;
+        wait?.reject(new Error(data.error || 'Could not join the crops.'));
       } else if (data.type === 'error') {
         onError(data.error || 'Unknown OCR error');
       }
@@ -1661,7 +1753,7 @@ export const TesseractOcrBridge = forwardRef<
   return (
     <View style={styles.hiddenContainer} pointerEvents="none">
       <WebView
-        key="tesseract-webview-v11"
+        key="tesseract-webview-v12"
         ref={webviewRef}
         originWhitelist={['*']}
         source={{ html: TESSERACT_WEBVIEW_HTML }}

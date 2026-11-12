@@ -344,15 +344,34 @@ export function taskSentence(lang: OcrLanguageCode, task: StudyTaskKey): string 
   return TASK_SENTENCES[lang][task];
 }
 
+/** Told to the model when the cropped page is pasted above the prompt. */
+const IMAGE_PAGE_NOTE: Record<OcrLanguageCode, string> = {
+  eng: 'The page is the image above. Read the text yourself. Also use any picture, diagram, or photo.',
+  fra: "La page est l'image au-dessus. Lis le texte toi-même. Tiens compte aussi des images, des schémas et des photos.",
+  heb: 'העמוד הוא התמונה למעלה. קרא את הטקסט בעצמך. התייחס גם לתמונות, לתרשימים ולצילומים.',
+  deu: 'Die Seite ist das Bild darüber. Lies den Text selbst. Berücksichtige auch Bilder, Diagramme und Fotos.',
+  spa: 'La página es la imagen de arriba. Lee el texto tú mismo. Ten en cuenta también las imágenes, los esquemas y las fotos.',
+  ita: "La pagina è l'immagine sopra. Leggi tu il testo. Tieni conto anche di immagini, schemi e foto.",
+  por: 'A página é a imagem acima. Lê tu o texto. Tem também em conta imagens, esquemas e fotos.',
+  lat: 'Pagina est imago supra. Ipse lege textum. Imagines quoque, diagrammata et photographias respice.',
+  grc: 'Ἡ σελὶς ἡ εἰκὼν ἡ ἄνω ἐστίν. Αὐτὸς ἀνάγνωθι τὸν λόγον. Πρόσσχες καὶ εἰκόσι καὶ διαγράμμασι καὶ φωτογραφίαις.'
+};
+
+export function imagePageNote(lang: OcrLanguageCode): string {
+  return IMAGE_PAGE_NOTE[lang];
+}
+
 export function buildTaskPrompt(
   taskText: string,
   lang: OcrLanguageCode,
-  ocrText: string
+  ocrText: string,
+  withImage = false
 ): string {
   const task = taskText.trim();
   const answer = `Answer in ${ASK_LANGUAGE_NAME[lang]}.`;
+  const imageNote = withImage ? IMAGE_PAGE_NOTE[lang] : '';
   const source = ocrText.trim();
-  const head = [task, answer].filter((part) => part.length > 0).join('\n\n');
+  const head = [task, answer, imageNote].filter((part) => part.length > 0).join('\n\n');
   if (!source) return head;
   return `${head}\n\n"""\n${source}\n"""`;
 }

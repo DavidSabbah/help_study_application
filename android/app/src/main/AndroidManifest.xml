@@ -29,6 +29,15 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="com.david.studylens"/>
       </intent-filter>
-    </activity>
-  </application>
+      </activity>
+      <provider
+        android:name="androidx.core.content.FileProvider"
+        android:authorities="${applicationId}.pageclipboard"
+        android:exported="false"
+        android:grantUriPermissions="true">
+        <meta-data
+          android:name="android.support.FILE_PROVIDER_PATHS"
+          android:resource="@xml/page_clipboard_paths" />
+      </provider>
+    </application>
 </manifest>
