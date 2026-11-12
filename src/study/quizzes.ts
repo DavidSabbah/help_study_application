@@ -7,8 +7,6 @@ const OPEN_QUIZ_KEY = '@studylens/open_quiz_v1';
 const STUDY_DIR = 'studylens';
 const STUDY_FILE = 'quizzes.json';
 const STUDY_TMP = 'quizzes.json.tmp';
-const DAY_MS = 24 * 60 * 60 * 1000;
-const AGAIN_MS = 10 * 60 * 1000;
 
 export type ItemKind = 'word' | 'question';
 export type QuizGrade = 'again' | 'known' | 'easy';
@@ -44,22 +42,106 @@ interface LegacyCard {
   source?: string;
 }
 
-export function quizLevel(items: QuizItem[]): number {
-  if (items.length === 0) return 1;
-  const score = items.reduce((sum, item) => {
-    const practice = Math.min(1, item.repetitions / 5);
-    const spacing = Math.min(1, item.intervalDays / 21);
-    const penalty = Math.min(0.45, item.lapses * 0.08);
-    return sum + Math.max(0, practice * 0.45 + spacing * 0.55 - penalty);
-  }, 0);
-  const ratio = score / items.length;
-  return Math.max(1, Math.min(10, Math.round(1 + ratio * 9)));
+/** pas connu → connu à peu près → connu. One step at a time. */
+type RecallBand = 'unknown' | 'shaky' | 'known';
+
+function recallStep(item: QuizItem): 0 | 1 | 2 {
+  if (item.repetitions <= 0) return 0;
+  if (item.repetitions === 1) return 1;
+  return 2;
 }
 
-export function dueItems(items: QuizItem[], now = Date.now()): QuizItem[] {
-  return items
-    .filter((item) => item.dueAt <= now)
-    .sort((a, b) => a.dueAt - b.dueAt || a.repetitions - b.repetitions);
+function recallBand(item: QuizItem): RecallBand {
+  const step = recallStep(item);
+  if (step === 0) return 'unknown';
+  if (step === 1) return 'shaky';
+  return 'known';
+}
+
+function shuffle<T>(list: T[]): T[] {
+  const next = [...list];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const swap = next[i];
+    next[i] = next[j];
+    next[j] = swap;
+  }
+  return next;
+}
+
+function take(list: QuizItem[], count: number): QuizItem[] {
+  if (count <= 0 || list.length === 0) return [];
+  return shuffle(list).slice(0, count);
+}
+
+/** Questions the person still misses or does not know solidly. */
+export function needsPractice(items: QuizItem[]): number {
+  return items.filter((item) => recallBand(item) !== 'known').length;
+}
+
+/**
+ * A session keeps the questions they miss, and still slips in ones they
+ * know so those stay revisions instead of disappearing.
+ * Roughly half the cards are unknown, a quarter are shaky, a quarter are known,
+ * when the quiz actually has questions in each of those groups.
+ */
+export function drawQuizQueue(items: QuizItem[]): QuizItem[] {
+  const unknown = items.filter((item) => recallBand(item) === 'unknown');
+  const shaky = items.filter((item) => recallBand(item) === 'shaky');
+  const known = items.filter((item) => recallBand(item) === 'known');
+
+  if (unknown.length > 0) {
+    const review = unknown.length;
+    let shakyTarget = Math.floor(review / 2);
+    let knownTarget = review - shakyTarget;
+    if (review % 2 === 1 && shaky.length > 0) {
+      shakyTarget += 1;
+      knownTarget -= 1;
+    }
+    const pickedShaky = take(shaky, shakyTarget);
+    const shakyLeft = shaky.filter((item) => !pickedShaky.includes(item));
+    const pickedKnown = take(known, knownTarget);
+    const knownShort = knownTarget - pickedKnown.length;
+    const extraShaky = knownShort > 0 ? take(shakyLeft, knownShort) : [];
+    const shakyShort = shakyTarget - pickedShaky.length;
+    const extraKnown = shakyShort > 0 ? take(
+      known.filter((item) => !pickedKnown.includes(item)),
+      shakyShort
+    ) : [];
+    return interleave(
+      shuffle(unknown),
+      pickedShaky.concat(extraShaky),
+      pickedKnown.concat(extraKnown)
+    );
+  }
+
+  if (shaky.length > 0) {
+    const pickedKnown = take(known, Math.max(1, Math.round(shaky.length / 2)));
+    return interleave([], shuffle(shaky), known.length === 0 ? [] : pickedKnown);
+  }
+
+  const revision = Math.max(1, Math.ceil(known.length / 4));
+  return take(known, revision);
+}
+
+function interleave(
+  unknown: QuizItem[],
+  shaky: QuizItem[],
+  known: QuizItem[]
+): QuizItem[] {
+  const fresh = [...unknown];
+  const unsure = [...shaky];
+  const familiar = [...known];
+  const out: QuizItem[] = [];
+  while (fresh.length > 0 || unsure.length > 0 || familiar.length > 0) {
+    if (fresh.length > 0) out.push(fresh.shift() as QuizItem);
+    if (fresh.length > 0) out.push(fresh.shift() as QuizItem);
+    if (unsure.length > 0) out.push(unsure.shift() as QuizItem);
+    else if (fresh.length > 0) out.push(fresh.shift() as QuizItem);
+    if (familiar.length > 0) out.push(familiar.shift() as QuizItem);
+    else if (fresh.length > 0) out.push(fresh.shift() as QuizItem);
+  }
+  return out;
 }
 
 const QUIZ_FORMAT_RULES = [
@@ -74,7 +156,6 @@ export function askPrompt(
   items: QuizItem[],
   answerLanguage: string
 ): string {
-  const level = quizLevel(items);
   const known = items
     .filter((item) => item.repetitions > 0)
     .slice(0, 12)
@@ -82,7 +163,6 @@ export function askPrompt(
     .join(', ');
   return [
     `Ajoute des éléments au quiz « ${quiz.title} ».`,
-    `Niveau actuel : ${level}/10. Vise un cran au-dessus.`,
     `Les sens et les réponses sont en ${answerLanguage}.`,
     known ? `Ne répète pas : ${known}.` : 'Le quiz est encore vide.',
     'Mélange des mots nouveaux et des questions.',
@@ -178,26 +258,14 @@ function isHeader(prompt: string): boolean {
 }
 
 function schedule(item: QuizItem, grade: QuizGrade, now: number): QuizItem {
-  const next = { ...item };
+  const next = { ...item, dueAt: now };
+  const step = recallStep(item);
   if (grade === 'again') {
-    next.repetitions = 0;
-    next.intervalDays = 0;
+    next.repetitions = Math.max(0, step - 1);
     next.lapses = item.lapses + 1;
-    next.ease = Math.max(1.3, item.ease - 0.2);
-    next.dueAt = now + AGAIN_MS;
     return next;
   }
-  const first = grade === 'easy' ? 3 : 1;
-  const second = grade === 'easy' ? 7 : 3;
-  if (item.repetitions <= 0) next.intervalDays = first;
-  else if (item.repetitions === 1) next.intervalDays = second;
-  else {
-    const boost = grade === 'easy' ? 1.4 : 1;
-    next.intervalDays = Math.max(1, Math.round(item.intervalDays * item.ease * boost));
-  }
-  if (grade === 'easy') next.ease = item.ease + 0.15;
-  next.repetitions = item.repetitions + 1;
-  next.dueAt = now + next.intervalDays * DAY_MS;
+  next.repetitions = Math.min(2, step + 1);
   return next;
 }
 

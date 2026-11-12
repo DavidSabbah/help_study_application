@@ -18,10 +18,9 @@ import {
   createQuiz,
   deleteQuiz,
   deleteQuizItem,
-  dueItems,
+  drawQuizQueue,
   gradeQuizItem,
   loadStudyData,
-  quizLevel,
   renameQuiz,
   setOpenQuiz
 } from '../study/quizzes';
@@ -77,7 +76,6 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
 
   const selected = quizzes.find((quiz) => quiz.id === selectedId) || null;
   const selectedItems = items.filter((item) => item.quizId === selectedId);
-  const level = quizLevel(selectedItems);
 
   const openModify = (quiz: StudyQuiz) => {
     setSelectedId(quiz.id);
@@ -196,7 +194,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     setSelectedId(quizId);
     const data = await reload();
     const mine = data.items.filter((item) => item.quizId === quizId);
-    setQueue(dueItems(mine));
+    setQueue(drawQuizQueue(mine));
     setRevealed(false);
     setPlayReturn(backTo);
     setPane('play');
@@ -206,9 +204,13 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     const current = queue[0];
     if (!current) return;
     await gradeQuizItem(current.id, correct ? 'known' : 'again');
-    setQueue((prev) =>
-      correct ? prev.slice(1) : [...prev.slice(1), prev[0]]
-    );
+    setQueue((prev) => {
+      const rest = prev.slice(1);
+      if (correct) return rest;
+      if (rest.length === 0) return [prev[0]];
+      const soon = Math.min(2, rest.length);
+      return [...rest.slice(0, soon), prev[0], ...rest.slice(soon)];
+    });
     setRevealed(false);
     await reload();
   };
@@ -221,11 +223,10 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
           <TouchableOpacity onPress={() => setPane(playReturn)}>
             <Text style={styles.link}>{selected.title}</Text>
           </TouchableOpacity>
-          <Text style={styles.level}>Niveau {quizLevel(selectedItems)}/10</Text>
         </View>
         {!current ? (
           <Text style={styles.help}>
-            Rien à demander pour l'instant. Les éléments réussis reviendront plus tard. Tu peux en ajouter de plus difficiles.
+            C'est fini pour cette fois. Une bonne réponse fait monter d'un cran. Une erreur fait reculer d'un cran.
           </Text>
         ) : (
           <View style={styles.quiz}>
@@ -249,7 +250,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
               </View>
             )}
             <Text style={styles.help}>
-              {queue.length} en attente. Suivant montre la réponse ici. Pas bien la rapproche. Bien répondu l'éloigne.
+              {queue.length} en attente. Pas bien recule d'un cran. Bien répondu avance d'un cran : pas connu, à peu près, puis connu.
             </Text>
           </View>
         )}
@@ -258,7 +259,6 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   }
 
   if (pane === 'detail' && selected) {
-    const waiting = dueItems(selectedItems).length;
     return (
       <View style={styles.card}>
         <TouchableOpacity
@@ -281,15 +281,16 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
         <TouchableOpacity onPress={saveName} style={styles.secondary}>
           <Text style={styles.secondaryText}>Enregistrer le nom</Text>
         </TouchableOpacity>
-        <Text style={styles.level}>
-          Niveau {level}/10 · {selectedItems.length} question{selectedItems.length > 1 ? 's' : ''} · {waiting} maintenant
+        <Text style={styles.help}>
+          {selectedItems.length} question{selectedItems.length > 1 ? 's' : ''}
         </Text>
         <TouchableOpacity
           onPress={() => selectedId && startPlay(selectedId, 'detail')}
-          style={styles.primary}
+          style={selectedItems.length > 0 ? styles.primary : styles.secondaryMuted}
+          disabled={selectedItems.length === 0}
         >
           <Text style={styles.primaryText}>
-            {waiting > 0 ? 'Commencer' : 'Rien à revoir'}
+            {selectedItems.length > 0 ? 'Commencer' : 'Ajoute des questions'}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={askMore} style={styles.secondary}>
@@ -380,7 +381,6 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
       )}
       {quizzes.map((quiz) => {
         const mine = items.filter((item) => item.quizId === quiz.id);
-        const waiting = dueItems(mine).length;
         return (
           <View key={quiz.id} style={styles.card}>
             <View style={styles.quizHead}>
@@ -395,8 +395,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
               <View style={styles.quizBody}>
                 <Text style={styles.title}>{quiz.title}</Text>
                 <Text style={styles.help}>
-                  Niveau {quizLevel(mine)}/10 · {mine.length} question{mine.length > 1 ? 's' : ''}
-                  {waiting > 0 ? ` · ${waiting} maintenant` : ''}
+                  {mine.length} question{mine.length > 1 ? 's' : ''}
                 </Text>
               </View>
             </View>
@@ -561,11 +560,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     flexShrink: 1
-  },
-  level: {
-    color: '#a5b4fc',
-    fontSize: 13,
-    fontWeight: '700'
   },
   help: {
     color: '#94a3b8',

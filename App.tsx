@@ -69,8 +69,8 @@ import {
   shareImageWithText
 } from './src/clipboardPage';
 import {
-  dueItems,
   loadStudyData,
+  needsPractice,
   pageQuestionQuizInstruction,
   pageWordQuizInstruction
 } from './src/study/quizzes';
@@ -175,7 +175,7 @@ export default function App() {
     if (phase !== 'home') return;
     loadStudyData().then((data) => {
       setWordCount(data.items.length);
-      setDueCount(dueItems(data.items).length);
+      setDueCount(needsPractice(data.items));
     });
   }, [phase]);
 
@@ -858,7 +858,12 @@ export default function App() {
                 title: 'Quiz',
                 detail:
                   'Plusieurs quiz. Modifie chacun pour y ajouter des questions, une par une ou en collant une réponse.',
-                meta: wordCount === 0 ? 'vide' : `${dueCount} maintenant`,
+                meta:
+                  wordCount === 0
+                    ? 'vide'
+                    : dueCount === 0
+                      ? 'révision'
+                      : `${dueCount} à revoir`,
                 onPress: () => showPhase('quiz')
               }
             ]}
