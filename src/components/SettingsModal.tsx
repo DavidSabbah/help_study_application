@@ -11,6 +11,9 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { LlmLink } from '../types';
 import { DEFAULT_LLM_LINKS } from '../storage/settingsStorage';
+import { StudyTask, restoreMissingTasks, taskDisplayTitle } from '../study/tasks';
+import { StudyTaskKey } from '../llmPrompts';
+import { MessageKey } from '../i18n/catalog';
 import { readDebugLog } from '../debug/debugLog';
 import { useI18n } from '../i18n/I18n';
 import { APP_LANGUAGES, languageOption } from '../i18n/languages';
@@ -22,6 +25,8 @@ interface SettingsModalProps {
   onChangeLinks: (links: LlmLink[]) => void;
   preprocessEnabled: boolean;
   onChangePreprocess: (enabled: boolean) => void;
+  tasks: StudyTask[];
+  onChangeTasks: (tasks: StudyTask[]) => void;
   onOpenLink: (link: LlmLink) => void;
 }
 
@@ -32,6 +37,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeLinks,
   preprocessEnabled,
   onChangePreprocess,
+  tasks,
+  onChangeTasks,
   onOpenLink
 }) => {
   const { t, lang, followsPhone, phoneSupported, setAppLanguage, direction } = useI18n();
@@ -39,6 +46,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [title, setTitle] = useState<string>('');
   const [url, setUrl] = useState<string>('');
   const [logNote, setLogNote] = useState<string>('');
+  const [taskName, setTaskName] = useState('');
+  const [taskBody, setTaskBody] = useState('');
+  const [taskNote, setTaskNote] = useState('');
 
   const copyLog = async () => {
     try {
@@ -108,6 +118,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onChangeLinks(links.filter((l) => l.id !== id));
     if (editingId === id) resetForm();
   };
+
+  const addTask = () => {
+    const name = taskName.trim();
+    const body = taskBody.trim();
+    if (!name || !body) {
+      setTaskNote(t('settings.taskNeed'));
+      return;
+    }
+    onChangeTasks([
+      ...tasks,
+      { id: `task-${Date.now()}`, title: name, instruction: body }
+    ]);
+    setTaskName('');
+    setTaskBody('');
+    setTaskNote('');
+  };
+
+  const removeTask = (id: string) => {
+    onChangeTasks(tasks.filter((task) => task.id !== id));
+  };
+
+  const labelFor = (task: StudyTask) =>
+    taskDisplayTitle(task, (key: StudyTaskKey) => t(`task.${key}` as MessageKey));
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -179,6 +212,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     {preprocessEnabled ? t('settings.on') : t('settings.off')}
                   </Text>
                 </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={[styles.sectionBox, styles.sectionGap]}>
+              <View style={styles.rowBetween}>
+                <Text style={styles.sectionTitle}>{t('settings.tasks')}</Text>
+                <TouchableOpacity
+                  onPress={() => onChangeTasks(restoreMissingTasks(tasks))}
+                  style={styles.resetBtn}
+                >
+                  <Text style={styles.resetBtnText}>{t('settings.taskRestore')}</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.fieldLabel}>{t('settings.taskName')}</Text>
+              <TextInput
+                style={styles.input}
+                placeholder={t('settings.taskNamePlaceholder')}
+                placeholderTextColor="#64748b"
+                value={taskName}
+                onChangeText={setTaskName}
+              />
+              <Text style={styles.fieldLabel}>{t('settings.taskInstruction')}</Text>
+              <TextInput
+                style={[styles.input, styles.taskInput]}
+                placeholder={t('settings.taskInstructionPlaceholder')}
+                placeholderTextColor="#64748b"
+                value={taskBody}
+                onChangeText={setTaskBody}
+                multiline
+                textAlignVertical="top"
+              />
+              <TouchableOpacity onPress={addTask} style={styles.saveLinkBtn}>
+                <Text style={styles.saveLinkBtnText}>{t('settings.taskAdd')}</Text>
+              </TouchableOpacity>
+              {taskNote.length > 0 && <Text style={styles.optionHint}>{taskNote}</Text>}
+              <View style={{ gap: 8 }}>
+                {tasks.map((task) => (
+                  <View key={task.id} style={styles.linkRow}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={styles.linkRowTitle} numberOfLines={1}>
+                        {labelFor(task)}
+                      </Text>
+                      {task.instruction.trim().length > 0 && (
+                        <Text style={styles.linkRowUrl} numberOfLines={2}>
+                          {task.instruction.trim()}
+                        </Text>
+                      )}
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => removeTask(task.id)}
+                      style={[styles.smallBtn, styles.dangerBtn]}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('settings.taskRemove')}
+                    >
+                      <Text style={styles.dangerBtnText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
               </View>
             </View>
 
@@ -420,6 +511,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 13,
     marginBottom: 10
+  },
+  taskInput: {
+    minHeight: 72,
+    textAlignVertical: 'top'
   },
   formButtonsRow: {
     flexDirection: 'row',

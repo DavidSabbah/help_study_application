@@ -61,12 +61,9 @@ import { AppCrashBoundary } from './src/debug/AppCrashBoundary';
 import { ZoomableImageModal, ZoomSlide } from './src/components/ZoomableImageModal';
 import {
   ASK_LANGUAGE_NAME,
-  STUDY_TASKS,
-  StudyTaskKey,
   buildTaskPrompt,
   imagePageNote,
-  isRtlLanguage,
-  taskSentence
+  isRtlLanguage
 } from './src/llmPrompts';
 import {
   PagePaste,
@@ -81,6 +78,14 @@ import {
   pageWordQuizInstruction
 } from './src/study/quizzes';
 import { loadFiches } from './src/study/fiches';
+import {
+  StudyTask,
+  defaultStudyTasks,
+  loadStudyTasks,
+  saveStudyTasks,
+  taskDisplayTitle,
+  taskInstruction
+} from './src/study/tasks';
 import { useI18n } from './src/i18n/I18n';
 import { MessageKey } from './src/i18n/catalog';
 import {
@@ -92,7 +97,7 @@ import {
 } from './src/session/appSession';
 
 type AppPhase = 'home' | 'capture' | 'prompt' | 'browser' | 'quiz' | 'fiches';
-type TaskChoice = StudyTaskKey | 'quiz_words' | 'quiz_questions';
+type TaskChoice = string;
 type PageSource = 'ocr' | 'image';
 
 function linkNeedsOcr(link: LlmLink | undefined): boolean {
@@ -171,9 +176,7 @@ export default function App() {
   const [copiedPrompt, setCopiedPrompt] = useState<string>('');
   const [promptFlash, setPromptFlash] = useState<boolean>(false);
   const [selectedTask, setSelectedTask] = useState<TaskChoice>('explain_lines');
-  const [taskText, setTaskText] = useState<string>(
-    taskSentence('fra', 'explain_lines')
-  );
+  const [taskText, setTaskText] = useState<string>('');
   const [taskCustom, setTaskCustom] = useState<boolean>(false);
   const [selectedLinkId, setSelectedLinkId] = useState<string>(DEFAULT_LLM_LINKS[0].id);
   const [browser, setBrowser] = useState<{
@@ -208,6 +211,7 @@ export default function App() {
     'fra'
   ]);
   const [links, setLinks] = useState<LlmLink[]>(DEFAULT_LLM_LINKS);
+  const [tasks, setTasks] = useState<StudyTask[]>(defaultStudyTasks());
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
   const [zoomSlides, setZoomSlides] = useState<ZoomSlide[] | null>(null);
   const [zoomTitle, setZoomTitle] = useState<string>('Image');
@@ -239,14 +243,16 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [loadedLinks, loadedLangs, loadedPreprocess, loadedResponse] =
+      const [loadedLinks, loadedLangs, loadedPreprocess, loadedResponse, loadedTasks] =
         await Promise.all([
           loadSavedLinks(),
           loadSelectedOcrLangs(),
           loadPreprocessEnabled(),
-          loadResponseLang()
+          loadResponseLang(),
+          loadStudyTasks()
         ]);
       setLinks(loadedLinks);
+      setTasks(loadedTasks);
       setSelectedLangs(loadedLangs);
       setPreprocessEnabled(loadedPreprocess);
       setResponseLang(loadedResponse);
@@ -266,16 +272,6 @@ export default function App() {
         setHydrated(true);
         return;
       }
-      const knownTasks = [
-        'explain_lines',
-        'solve_problem',
-        'notebook_lesson',
-        'summarize',
-        'argument',
-        'raw_only',
-        'quiz_words',
-        'quiz_questions'
-      ];
       unstable_batchedUpdates(() => {
         setPhase(session.phase);
         setPhoto(session.photo);
@@ -284,9 +280,7 @@ export default function App() {
         setRois(session.rois);
         setOcrText(session.ocrText);
         setPageSource(session.pageSource);
-        if (knownTasks.includes(session.selectedTask)) {
-          setSelectedTask(session.selectedTask as TaskChoice);
-        }
+        if (session.selectedTask) setSelectedTask(session.selectedTask);
         setTaskText(session.taskText);
         setTaskCustom(session.taskCustom);
         if (session.selectedLinkId) setSelectedLinkId(session.selectedLinkId);
@@ -315,8 +309,10 @@ export default function App() {
       setTaskText(pageQuestionQuizInstruction(language));
       return;
     }
-    setTaskText(taskSentence(responseLang, selectedTask));
-  }, [responseLang, selectedTask, taskCustom]);
+    const task = tasks.find((item) => item.id === selectedTask);
+    if (!task) return;
+    setTaskText(taskInstruction(task, responseLang));
+  }, [responseLang, selectedTask, taskCustom, tasks]);
 
   const resetPhotoState = (nextPhoto: CapturedPhoto | null) => {
     setPhoto(nextPhoto);
@@ -348,6 +344,20 @@ export default function App() {
   const handleUpdateLinks = async (nextLinks: LlmLink[]) => {
     setLinks(nextLinks);
     await saveLinks(nextLinks);
+  };
+
+  const handleUpdateTasks = async (next: StudyTask[]) => {
+    setTasks(next);
+    await saveStudyTasks(next);
+    if (
+      selectedTask !== 'quiz_words' &&
+      selectedTask !== 'quiz_questions' &&
+      !next.some((task) => task.id === selectedTask)
+    ) {
+      const first = next[0];
+      setTaskCustom(false);
+      setSelectedTask(first ? first.id : 'explain_lines');
+    }
   };
 
   const handleSetPreprocess = (enabled: boolean) => {
@@ -840,11 +850,11 @@ export default function App() {
       setTaskText(pageQuestionQuizInstruction(language));
       return;
     }
-    const task = STUDY_TASKS.find((item) => item.key === id);
+    const task = tasks.find((item) => item.id === id);
     if (!task) return;
-    setSelectedTask(task.key);
+    setSelectedTask(task.id);
     setTaskCustom(false);
-    setTaskText(taskSentence(responseLang, task.key));
+    setTaskText(taskInstruction(task, responseLang));
   };
 
   const handleExecute = async () => {
@@ -1408,9 +1418,9 @@ export default function App() {
             <ComboBox
               value={selectedTask}
               options={[
-                ...STUDY_TASKS.map((task) => ({
-                  id: task.key,
-                  label: t(`task.${task.key}` as MessageKey)
+                ...tasks.map((task) => ({
+                  id: task.id,
+                  label: taskDisplayTitle(task, (key) => t(`task.${key}` as MessageKey))
                 })),
                 { id: 'quiz_words', label: t('prompt.quizWords') },
                 { id: 'quiz_questions', label: t('prompt.quizQuestions') }
@@ -1551,6 +1561,8 @@ export default function App() {
         onChangeLinks={handleUpdateLinks}
         preprocessEnabled={preprocessEnabled}
         onChangePreprocess={handleSetPreprocess}
+        tasks={tasks}
+        onChangeTasks={handleUpdateTasks}
         onOpenLink={(link) => openBrowser(link.url, link.title, 'settings', false)}
       />
     </SafeAreaView>
