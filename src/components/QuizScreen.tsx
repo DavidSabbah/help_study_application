@@ -7,6 +7,7 @@ import {
   View,
   StyleSheet
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import {
   ItemKind,
@@ -64,6 +65,7 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   const [status, setStatus] = useState('');
   const [revealed, setRevealed] = useState(Boolean(boot.current?.revealed));
   const [queue, setQueue] = useState<QuizItem[]>([]);
+  const [past, setPast] = useState<QuizItem[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [booting, setBooting] = useState((boot.current?.pane || 'list') !== 'list');
 
@@ -232,13 +234,13 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
   const saveReply = async () => {
     if (!selectedId) return;
     const result = await addLinesToQuiz(selectedId, reply);
-    if (result.added === 0 && result.updated === 0) {
+    if (result.added === 0 && result.skipped === 0) {
       setStatus(t('quiz.nothingToAdd'));
       return;
     }
     setStatus(
-      result.updated
-        ? t('quiz.addedUpdated', { added: result.added, updated: result.updated })
+      result.skipped
+        ? t('quiz.addedSkipped', { added: result.added, skipped: result.skipped })
         : t('quiz.addedOnly', { added: result.added })
     );
     setReply('');
@@ -272,21 +274,52 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     const data = await reload();
     const mine = data.items.filter((item) => item.quizId === quizId);
     setQueue(drawQuizQueue(mine));
+    setPast([]);
     setRevealed(false);
     setPlayReturn(backTo);
     setPane('play');
   };
 
+  const eraseCurrent = () => {
+    const current = queue[0];
+    if (!current) return;
+    const prompt = current.prompt.length > 80 ? `${current.prompt.slice(0, 80)}…` : current.prompt;
+    Alert.alert(t('quiz.eraseTitle'), t('quiz.eraseBody', { prompt }), [
+      { text: t('quiz.cancel'), style: 'cancel' },
+      {
+        text: t('quiz.erase'),
+        style: 'destructive',
+        onPress: async () => {
+          await deleteQuizItem(current.id);
+          setQueue((prev) => prev.filter((item) => item.id !== current.id));
+          setRevealed(false);
+          await reload();
+        }
+      }
+    ]);
+  };
+
+  const goBack = () => {
+    const previous = past[past.length - 1];
+    if (!previous) return;
+    setPast((prev) => prev.slice(0, -1));
+    setQueue((q) => {
+      const current = q[0];
+      const rest = q.slice(current ? 1 : 0).filter((item) => item.id !== previous.id);
+      return current ? [previous, current, ...rest] : [previous, ...rest];
+    });
+    setRevealed(false);
+  };
+
   const grade = async (correct: boolean) => {
     const current = queue[0];
     if (!current) return;
+    setPast((prev) => [...prev, current]);
     await gradeQuizItem(current.id, correct ? 'known' : 'again');
     setQueue((prev) => {
       const rest = prev.slice(1);
-      if (correct) return rest;
-      if (rest.length === 0) return [prev[0]];
-      const soon = Math.min(2, rest.length);
-      return [...rest.slice(0, soon), prev[0], ...rest.slice(soon)];
+      if (!correct && rest.length === 0) return [prev[0]];
+      return rest;
     });
     setRevealed(false);
     await reload();
@@ -297,9 +330,20 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
     return (
       <View style={styles.card}>
         <View style={styles.topRow}>
-          <TouchableOpacity onPress={() => setPane(playReturn)}>
+          <TouchableOpacity onPress={() => setPane(playReturn)} style={styles.backLink}>
             <Text style={styles.link}>{selected.title}</Text>
           </TouchableOpacity>
+          {current && (
+            <TouchableOpacity
+              onPress={eraseCurrent}
+              style={styles.iconBtn}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              accessibilityRole="button"
+              accessibilityLabel={t('quiz.erase')}
+            >
+              <Ionicons name="trash-outline" size={18} color="#fca5a5" />
+            </TouchableOpacity>
+          )}
         </View>
         {!current ? (
           <Text style={styles.help}>{t('quiz.playDone')}</Text>
@@ -307,13 +351,27 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
           <View style={styles.quiz}>
             <Text style={styles.kind}>{current.kind === 'word' ? t('quiz.word') : t('quiz.question')}</Text>
             <Text style={styles.prompt}>{current.prompt}</Text>
-            {revealed ? (
-              <Text style={styles.answer}>{current.answer}</Text>
-            ) : (
-              <TouchableOpacity onPress={() => setRevealed(true)} style={styles.primary}>
-                <Text style={styles.primaryText}>{t('quiz.show')}</Text>
+            <Text style={styles.itemId} selectable>
+              {current.id}
+            </Text>
+            {revealed && <Text style={styles.answer}>{current.answer}</Text>}
+            <View style={styles.nextRow}>
+              <TouchableOpacity
+                onPress={goBack}
+                disabled={past.length === 0}
+                style={[styles.backBtn, past.length === 0 && styles.pageBtnOff]}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                accessibilityRole="button"
+                accessibilityLabel={t('quiz.back')}
+              >
+                <Ionicons name="chevron-back" size={18} color="#e2e8f0" />
               </TouchableOpacity>
-            )}
+              {!revealed && (
+                <TouchableOpacity onPress={() => setRevealed(true)} style={styles.primaryFlex}>
+                  <Text style={styles.primaryText}>{t('quiz.show')}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             {revealed && (
               <View style={styles.grades}>
                 <TouchableOpacity onPress={() => grade(false)} style={styles.again}>
@@ -455,19 +513,31 @@ export const QuizScreen: React.FC<QuizScreenProps> = ({
         return (
           <View key={quiz.id} style={styles.card}>
             <View style={styles.quizHead}>
-              <View style={styles.frontActions}>
-                <TouchableOpacity onPress={() => openModify(quiz)} style={styles.modifyBtn}>
-                  <Text style={styles.frontText}>{t('quiz.modify')}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => confirmRemove(quiz)} style={styles.removeBtn}>
-                  <Text style={styles.frontText}>{t('quiz.delete')}</Text>
-                </TouchableOpacity>
-              </View>
               <View style={styles.quizBody}>
                 <Text style={styles.title}>{quiz.title}</Text>
                 <Text style={styles.help}>
                   {t(mine.length > 1 ? 'quiz.questionsMany' : 'quiz.questionsOne', { n: mine.length })}
                 </Text>
+              </View>
+              <View style={styles.iconRow}>
+                <TouchableOpacity
+                  onPress={() => openModify(quiz)}
+                  style={styles.iconBtn}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('quiz.modify')}
+                >
+                  <Ionicons name="pencil-outline" size={18} color="#c7d2fe" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => confirmRemove(quiz)}
+                  style={styles.iconBtn}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('quiz.delete')}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#fca5a5" />
+                </TouchableOpacity>
               </View>
             </View>
             <TouchableOpacity
@@ -529,9 +599,18 @@ function QuestionPager({
         <View style={styles.quiz}>
           <Text style={styles.kind}>{current.kind === 'word' ? t('quiz.word') : t('quiz.question')}</Text>
           <Text style={styles.prompt}>{current.prompt}</Text>
+          <Text style={styles.itemId} selectable>
+            {current.id}
+          </Text>
           <Text style={styles.answer}>{current.answer}</Text>
-          <TouchableOpacity onPress={() => onDelete(current.id)} style={styles.removeBtn}>
-            <Text style={styles.frontText}>{t('quiz.erase')}</Text>
+          <TouchableOpacity
+            onPress={() => onDelete(current.id)}
+            style={styles.iconBtn}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            accessibilityRole="button"
+            accessibilityLabel={t('quiz.erase')}
+          >
+            <Ionicons name="trash-outline" size={18} color="#fca5a5" />
           </TouchableOpacity>
         </View>
       )}
@@ -557,34 +636,30 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 8
   },
+  backLink: {
+    flex: 1
+  },
+  iconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4
+  },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0f172a'
+  },
   quizHead: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10
   },
-  frontActions: {
-    gap: 6
-  },
   quizBody: {
     flex: 1,
     gap: 4
-  },
-  modifyBtn: {
-    backgroundColor: '#4338ca',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
-  removeBtn: {
-    backgroundColor: '#7f1d1d',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
-  frontText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '700'
   },
   secondaryMuted: {
     backgroundColor: '#1e293b',
@@ -721,6 +796,23 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     lineHeight: 32
+  },
+  itemId: {
+    color: '#64748b',
+    fontSize: 11
+  },
+  nextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#334155'
   },
   answer: {
     color: '#e2e8f0',

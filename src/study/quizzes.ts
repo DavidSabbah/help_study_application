@@ -29,6 +29,7 @@ export interface QuizItem {
   repetitions: number;
   lapses: number;
   dueAt: number;
+  lastAskedAt?: number;
 }
 
 interface StudyData {
@@ -70,6 +71,14 @@ function shuffle<T>(list: T[]): T[] {
   return next;
 }
 
+/** Skip a word asked inside this window when another word can take its place. */
+const RECENT_ASK_MS = 30 * 60 * 1000;
+
+function askedRecently(item: QuizItem, now: number): boolean {
+  const seen = item.lastAskedAt ?? 0;
+  return seen > 0 && now - seen < RECENT_ASK_MS;
+}
+
 function take(list: QuizItem[], count: number): QuizItem[] {
   if (count <= 0 || list.length === 0) return [];
   return shuffle(list).slice(0, count);
@@ -85,11 +94,15 @@ export function needsPractice(items: QuizItem[]): number {
  * know so those stay revisions instead of disappearing.
  * Roughly half the cards are unknown, a quarter are shaky, a quarter are known,
  * when the quiz actually has questions in each of those groups.
+ * A word asked in the last 30 minutes is left out when another word is available,
+ * including after it moves from one recall band to another.
  */
-export function drawQuizQueue(items: QuizItem[]): QuizItem[] {
-  const unknown = items.filter((item) => recallBand(item) === 'unknown');
-  const shaky = items.filter((item) => recallBand(item) === 'shaky');
-  const known = items.filter((item) => recallBand(item) === 'known');
+export function drawQuizQueue(items: QuizItem[], now = Date.now()): QuizItem[] {
+  const hasWaiting = items.some((item) => !askedRecently(item, now));
+  const pool = hasWaiting ? items.filter((item) => !askedRecently(item, now)) : items;
+  const unknown = pool.filter((item) => recallBand(item) === 'unknown');
+  const shaky = pool.filter((item) => recallBand(item) === 'shaky');
+  const known = pool.filter((item) => recallBand(item) === 'known');
 
   if (unknown.length > 0) {
     const review = unknown.length;
@@ -211,7 +224,7 @@ export function parseQuizLines(
     if (!line || /^(quiz|end|fin)$/i.test(line)) continue;
     const parsed = splitQuizLine(line);
     if (!parsed || isHeader(parsed.prompt)) continue;
-    const key = `${parsed.kind}:${parsed.prompt.toLocaleLowerCase()}`;
+    const key = questionKey(parsed.prompt);
     if (seen.has(key)) continue;
     seen.add(key);
     found.push(parsed);
@@ -258,8 +271,18 @@ function isHeader(prompt: string): boolean {
   return /^(mot|terme|sens|word|question|réponse|reponse|meaning)$/i.test(prompt.trim());
 }
 
+function questionKey(prompt: string): string {
+  return prompt
+    .normalize('NFKC')
+    .replace(/[\u0591-\u05C7]/g, '')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s"'“”«»„!?.,:;()[\]{}]+|[\s"'“”«»„!?.,:;()[\]{}]+$/g, '')
+    .trim();
+}
+
 function schedule(item: QuizItem, grade: QuizGrade, now: number): QuizItem {
-  const next = { ...item, dueAt: now };
+  const next = { ...item, dueAt: now, lastAskedAt: now };
   const step = recallStep(item);
   if (grade === 'again') {
     next.repetitions = Math.max(0, step - 1);
@@ -533,23 +556,23 @@ export async function addManualItem(
 export async function addLinesToQuiz(
   quizId: string,
   text: string
-): Promise<{ added: number; updated: number }> {
+): Promise<{ added: number; skipped: number }> {
   const incoming = parseQuizLines(text);
   const data = await readData();
+  const known = new Set(
+    data.items
+      .filter((item) => item.quizId === quizId)
+      .map((item) => questionKey(item.prompt))
+  );
   let added = 0;
-  let updated = 0;
+  let skipped = 0;
   incoming.forEach((line, index) => {
-    const existing = data.items.find(
-      (item) =>
-        item.quizId === quizId &&
-        item.prompt.toLocaleLowerCase() === line.prompt.toLocaleLowerCase()
-    );
-    if (existing) {
-      existing.answer = line.answer;
-      existing.kind = line.kind;
-      updated += 1;
+    const key = questionKey(line.prompt);
+    if (!key || known.has(key)) {
+      skipped += 1;
       return;
     }
+    known.add(key);
     data.items.push({
       id: `item-${Date.now()}-${index}`,
       quizId,
@@ -564,8 +587,8 @@ export async function addLinesToQuiz(
     });
     added += 1;
   });
-  await saveData(data);
-  return { added, updated };
+  if (added > 0) await saveData(data);
+  return { added, skipped };
 }
 
 export async function gradeQuizItem(id: string, grade: QuizGrade): Promise<void> {
